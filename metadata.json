@@ -1,0 +1,7 @@
+{
+  "name": "The Next Gen Eval",
+  "description": "NextGen Eval evaluates answer sheets using AI against question papers, answer keys, and marking schemes.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
