@@ -571,7 +571,14 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, onAddHistoryIte
       updateQueueItemStatus(item.id, 'evaluating');
       setCurrentActionLog(`Running AI Evaluation for ${item.studentName}...`);
       
-      const result = await generateStructuredFeedback(sourceDocPayload, null, evalMode);
+      const result = await generateStructuredFeedback(
+        sourceDocPayload, 
+        null, 
+        evalMode,
+        (percent, msg) => {
+          setCurrentActionLog(`[${percent}%] ${item.studentName}: ${msg}`);
+        }
+      );
       
       const enrichedResult: EvaluationReport = {
         ...result,

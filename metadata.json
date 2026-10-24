@@ -3,5 +3,8 @@
   "description": "NextGen Eval evaluates answer sheets using AI against question papers, answer keys, and marking schemes.",
   "requestFramePermissions": [
     "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

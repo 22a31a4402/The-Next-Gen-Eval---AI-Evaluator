@@ -502,7 +502,14 @@ const App: React.FC = () => {
         : null;
 
       setLoadingStep("NextGen Eval is evaluating content...");
-      const result = await generateStructuredFeedback(sourceData, feedbackData, evalMode);
+      const result = await generateStructuredFeedback(
+        sourceData, 
+        feedbackData, 
+        evalMode, 
+        (percent, msg) => {
+          setLoadingStep(`[${percent}%] ${msg}`);
+        }
+      );
       
       const newReport = {
         ...result,

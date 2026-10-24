@@ -1,0 +1,83 @@
+{
+  "id": "fcc09561-c01a-48ed-af73-9e9a4e403b2e",
+  "correlationId": "eval_1792676932334_2c111901",
+  "status": "completed",
+  "progressPercent": 100,
+  "currentStepMessage": "Evaluation complete and verified",
+  "mode": "without-manual",
+  "studentName": "Batch Student 1",
+  "testTitle": "Academic Assessment",
+  "createdAt": 1792676932335,
+  "updatedAt": 1792677050136,
+  "metrics": {
+    "correlationId": "eval_1792676932334_2c111901",
+    "startTime": 1792677050135,
+    "cacheHit": true,
+    "retriesCount": 0,
+    "preprocessingLatencyMs": 1,
+    "modelUsed": "gemini-3.8-flash",
+    "inputTokens": 973,
+    "outputTokens": 239,
+    "estimatedCostUsd": 0,
+    "geminiLatencyMs": 0,
+    "validationLatencyMs": 2,
+    "totalLatencyMs": 1,
+    "endTime": 1792677050136
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "Batch_Student_1.pdf",
+      "text": "Q1 Answer here."
+    }
+  },
+  "report": {
+    "studentName": "Batch Student 1",
+    "testTitle": "Academic Assessment",
+    "testTopics": "General Assessment",
+    "testDate": "Not Specified",
+    "totalScore": 0,
+    "maxScore": 1,
+    "questions": [
+      {
+        "qNo": "Q1",
+        "marks": 0,
+        "maxMarks": 1,
+        "isCorrect": false,
+        "feedbackPoints": [
+          "The response does not provide the required academic substance or detailed solution for Question 1.",
+          "Please provide complete derivations, explanations, or answers as expected by the marking scheme."
+        ],
+        "isFlagged": false
+      }
+    ],
+    "generalFeedback": {
+      "overallPerformance": [
+        "The submitted response was insufficient to evaluate mastery of the topic."
+      ],
+      "mcqs": [
+        "No multiple-choice questions were present or attempted."
+      ],
+      "contentAccuracy": [
+        "Accuracy could not be verified due to missing response content."
+      ],
+      "completenessOfAnswers": [
+        "Answers were incomplete and require thorough explanations."
+      ],
+      "presentationDiagrams": [
+        "No structured layout, steps, or diagrams were included."
+      ],
+      "investigations": [
+        "No intermediate steps, derivations, or analytical reasoning were shown."
+      ],
+      "attemptingQuestions": [
+        "Attempt all questions with step-by-step reasoning to secure partial credit."
+      ],
+      "actionPoints": [
+        "Review syllabus material thoroughly and write out detailed responses for all questions."
+      ]
+    },
+    "evaluatedByModel": "gemini-3.8-flash",
+    "id": "fcc09561-c01a-48ed-af73-9e9a4e403b2e",
+    "timestamp": 1792677050136
+  }
+}

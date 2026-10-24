@@ -1,0 +1,24 @@
+{
+  "id": "cb2e403a-8d7e-4d9b-b4f3-9aa4942e9475",
+  "correlationId": "eval_1792677096037_bb9bd3a4",
+  "status": "queued",
+  "progressPercent": 0,
+  "currentStepMessage": "Job queued for evaluation",
+  "mode": "without-manual",
+  "studentName": "Batch Student 1",
+  "testTitle": "Academic Assessment",
+  "createdAt": 1792677096037,
+  "updatedAt": 1792677096037,
+  "metrics": {
+    "correlationId": "eval_1792677096037_bb9bd3a4",
+    "startTime": 1792677096037,
+    "cacheHit": false,
+    "retriesCount": 0
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "Batch_Student_1.pdf",
+      "text": "Q1 Answer here."
+    }
+  }
+}

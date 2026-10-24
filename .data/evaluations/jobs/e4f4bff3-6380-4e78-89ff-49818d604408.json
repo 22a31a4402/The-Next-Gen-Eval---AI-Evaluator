@@ -1,0 +1,25 @@
+{
+  "id": "e4f4bff3-6380-4e78-89ff-49818d604408",
+  "correlationId": "eval_1792677050134_49f3f6f2",
+  "status": "grading",
+  "progressPercent": 45,
+  "currentStepMessage": "Invoking academic evaluation with Gemini...",
+  "mode": "without-manual",
+  "studentName": "John Doe",
+  "testTitle": "Biology Test 1",
+  "createdAt": 1792677050134,
+  "updatedAt": 1792677050139,
+  "metrics": {
+    "correlationId": "eval_1792677050134_49f3f6f2",
+    "startTime": 1792677050138,
+    "cacheHit": false,
+    "retriesCount": 0,
+    "preprocessingLatencyMs": 0
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "Test_Student.pdf",
+      "text": "Answer 1: Photosynthesis converts light energy to chemical energy."
+    }
+  }
+}
