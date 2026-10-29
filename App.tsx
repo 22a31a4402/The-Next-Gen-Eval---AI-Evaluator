@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash, Check, Sparkles, Sliders } from 'lucide-react';
 import { generateStructuredFeedback, parseActionableError, EvaluationMode } from './services/geminiService';
-import { EvaluationReport, FileData, HistoryItem } from './types';
+import { EvaluationReport, FileData, HistoryItem, CanonicalAnswerKey } from './types';
 import FileUploader from './components/FileUploader';
+import { AnswerKeySelector } from './components/AnswerKeySelector';
 import FeedbackReport from './components/FeedbackReport';
 import BatchProcessor from './components/BatchProcessor';
 import { logoBase64 } from './services/logoBase64';
@@ -23,9 +24,9 @@ import { saveReportToDB, getReportFromDB, deleteReportFromDB } from './services/
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 
-const pdfjs: any = (pdfjsLib as any).GlobalWorkerOptions 
-  ? pdfjsLib 
-  : (pdfjsLib as any).default || pdfjsLib;
+const pdfjs: any = (pdfjsLib as any)?.getDocument
+  ? pdfjsLib
+  : (pdfjsLib as any)?.default || pdfjsLib;
 
 if (pdfjs && pdfjs.GlobalWorkerOptions) {
   pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -141,6 +142,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<'dashboard' | 'report' | 'history' | 'batch'>('dashboard');
   const [evalMode, setEvalMode] = useState<EvaluationMode>('without-manual');
+  const [currentAnswerKey, setCurrentAnswerKey] = useState<CanonicalAnswerKey | null>(null);
   const [editingSingleReport, setEditingSingleReport] = useState<EvaluationReport | null>(null);
 
   // Helper handlers to edit single evaluation report
@@ -452,12 +454,18 @@ const App: React.FC = () => {
   };
 
   const handleAnalyze = async () => {
-    if (!sourceDoc) {
-      setError("Please upload the Student Answer Sheet.");
+    if (!currentAnswerKey) {
+      setError("Please prepare an Answer Key first (Mode 1: Generate using AI or Mode 2: Upload Existing Answer Key).");
       return;
     }
-    if (evalMode === 'with-manual' && !dirtyFeedbackDoc) {
-      setError("Faculty Notes are required for 'Manual Feedback' mode.");
+
+    if (currentAnswerKey.status !== 'approved') {
+      setError(`The Answer Key is currently in '${currentAnswerKey.status}' status. The instructor must review and click 'Approve Answer Key' before evaluating student scripts.`);
+      return;
+    }
+
+    if (!sourceDoc) {
+      setError("Please upload the Student Answer Sheet.");
       return;
     }
 
@@ -467,48 +475,33 @@ const App: React.FC = () => {
     try {
       setLoadingStep("Reading documents...");
       
-      let sharedContextText = '';
+      let qpData: FileData | null = null;
+      let akData: FileData | null = null;
+
       if (questionPaperFile) {
         setLoadingStep(`Reading Valuation Question Paper: ${questionPaperFile.name}...`);
-        const qpData = await processFile(questionPaperFile);
-        if (qpData.text) {
-          sharedContextText += `--- OFFICIAL QUESTION PAPER ---\n${qpData.text}\n\n`;
-        }
+        qpData = await processFile(questionPaperFile);
       }
       if (answerKeyFile) {
         setLoadingStep(`Reading Official Answer Key: ${answerKeyFile.name}...`);
-        const akData = await processFile(answerKeyFile);
-        if (akData.text) {
-          sharedContextText += `--- OFFICIAL OFFICIAL ANSWER KEY (THE ABSOLUTE TRUTH) ---\n${akData.text}\n\n`;
-        }
+        akData = await processFile(answerKeyFile);
       }
 
       setLoadingStep(`Reading Student Answer Sheet: ${sourceDoc.name}...`);
       const sourceData = await processFile(sourceDoc);
 
-      if (sharedContextText) {
-        const combinedText = `
-          ${sharedContextText}
-          
-          --- STUDENT WRITTEN ANSWER SCRIPT ---
-          STUDENT NAME: ${extractStudentNameFromFile(sourceDoc.name)}
-          ${sourceData.text || ''}
-        `;
-        sourceData.text = combinedText;
-      }
-
-      const feedbackData = evalMode === 'with-manual' && dirtyFeedbackDoc 
-        ? await processFile(dirtyFeedbackDoc) 
-        : null;
-
-      setLoadingStep("NextGen Eval is evaluating content...");
+      setLoadingStep("NextGen Eval is evaluating student responses against approved key...");
       const result = await generateStructuredFeedback(
         sourceData, 
-        feedbackData, 
-        evalMode, 
+        null, 
+        'without-manual', 
         (percent, msg) => {
           setLoadingStep(`[${percent}%] ${msg}`);
-        }
+        },
+        qpData,
+        akData,
+        undefined,
+        currentAnswerKey.id
       );
       
       const newReport = {
@@ -842,120 +835,49 @@ const App: React.FC = () => {
         </button>
       </div>
 
-      <div className="flex justify-center mb-10">
-        <div className="bg-slate-200/50 p-1 rounded-xl flex items-center shadow-inner">
-          <button 
-            onClick={() => setEvalMode('with-manual')}
-            className={`px-5 py-2 rounded-lg font-bold text-sm transition-all ${evalMode === 'with-manual' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}
-          >
-            With Faculty Notes
-          </button>
-          <button 
-            onClick={() => setEvalMode('without-manual')}
-            className={`px-5 py-2 rounded-lg font-bold text-sm transition-all ${evalMode === 'without-manual' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}
-          >
-            Automated Key Only
-          </button>
+      {/* Step 1: Prepare & Approve Exam Answer Key */}
+      <div className="mb-10">
+        <div className="text-center mb-4">
+          <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest">
+            Step 1: Prepare & Approve Exam Answer Key
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Choose how to prepare the authoritative answer key. Once approved, it will be used to evaluate student submissions.
+          </p>
         </div>
+
+        <AnswerKeySelector
+          currentAnswerKey={currentAnswerKey}
+          onAnswerKeyChange={setCurrentAnswerKey}
+          questionPaperFile={questionPaperFile}
+          onQuestionPaperFileChange={setQuestionPaperFile}
+          answerKeyFile={answerKeyFile}
+          onAnswerKeyFileChange={setAnswerKeyFile}
+          fileToData={processFile}
+        />
       </div>
 
-      {evalMode === 'without-manual' ? (
-        <div className="max-w-xl mx-auto space-y-6 mb-10">
-          {/* Question Paper Field */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest text-center">
-              1. Question Paper
-            </h3>
-            <FileUploader
-              label="Question Paper"
-              description="Extracts maxMarks strictly. PDF/DOCX/Images"
-              onFileSelect={setQuestionPaperFile}
-              selectedFile={questionPaperFile}
-              icon={<svg className="w-8 h-8 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>}
-            />
-          </div>
-
-          {/* Answer Key Field */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest text-center">
-              2. Official Answer Key
-            </h3>
-            <FileUploader
-              label="Official Answer Key"
-              description="Absolute benchmarks for points. PDF/DOCX/Images"
-              onFileSelect={setAnswerKeyFile}
-              selectedFile={answerKeyFile}
-              icon={<svg className="w-8 h-8 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>}
-            />
-          </div>
-
-          {/* Student Answer Sheet */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest text-center">
-              3. Student Answer Sheet
-            </h3>
-            <FileUploader
-              label="Student Answer Script"
-              description="PDF/DOCX containing custom answers"
-              onFileSelect={setSourceDoc}
-              selectedFile={sourceDoc}
-              icon={<svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>}
-            />
-          </div>
+      {/* Step 2: Upload Student Answer Script */}
+      <div className="mb-10 pt-8 border-t border-slate-200">
+        <div className="text-center mb-4">
+          <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest">
+            Step 2: Upload Student Answer Sheet
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Upload the student's handwritten or typed script (PDF, Word, or Scanned Images).
+          </p>
         </div>
-      ) : (
-        <div className="grid md:grid-cols-2 gap-8 mb-10">
-          
-          {/* Left Column: Student Submission Materials */}
-          <div className="space-y-4">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-              <span>Student Submission Materials</span>
-            </h3>
-            <div className="grid gap-4">
-              <FileUploader
-                label="Student Answer Script"
-                description="PDF/DOCX containing custom answers"
-                onFileSelect={setSourceDoc}
-                selectedFile={sourceDoc}
-                icon={<svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>}
-              />
-              {evalMode === 'with-manual' && (
-                <FileUploader
-                  label="Human Evaluation Notes"
-                  description="Scanned handwritten feedback/marks"
-                  onFileSelect={setDirtyFeedbackDoc}
-                  selectedFile={dirtyFeedbackDoc}
-                  icon={<svg className="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>}
-                />
-              )}
-            </div>
-          </div>
 
-          {/* Right Column: Shared Reference parameters (Recommended) */}
-          <div className="space-y-4">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-              <span>Evaluation Reference Params </span>
-            </h3>
-            <div className="grid gap-4">
-              <FileUploader
-                label="Question Paper"
-                description="Extracts maxMarks strictly. PDF/DOCX/Images"
-                onFileSelect={setQuestionPaperFile}
-                selectedFile={questionPaperFile}
-                icon={<svg className="w-8 h-8 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>}
-              />
-              <FileUploader
-                label="Official Answer Key"
-                description="Absolute benchmarks for points. PDF/DOCX/Images"
-                onFileSelect={setAnswerKeyFile}
-                selectedFile={answerKeyFile}
-                icon={<svg className="w-8 h-8 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>}
-              />
-            </div>
-          </div>
-
+        <div className="max-w-xl mx-auto">
+          <FileUploader
+            label="Student Answer Script"
+            description="PDF/DOCX/Images containing custom handwritten or typed answers"
+            onFileSelect={setSourceDoc}
+            selectedFile={sourceDoc}
+            icon={<svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>}
+          />
         </div>
-      )}
+      </div>
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl mb-8 flex items-center gap-3 animate-pulse">
@@ -966,11 +888,11 @@ const App: React.FC = () => {
 
       <button
         onClick={handleAnalyze}
-        disabled={isLoading || !sourceDoc || (evalMode === 'with-manual' && !dirtyFeedbackDoc)}
+        disabled={isLoading || !sourceDoc || !currentAnswerKey || currentAnswerKey.status !== 'approved'}
         className={`w-full py-5 rounded-2xl font-bold text-lg shadow-xl transition-all flex flex-col items-center justify-center ${
-          isLoading 
+          isLoading || !sourceDoc || !currentAnswerKey || currentAnswerKey.status !== 'approved'
           ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
-          : 'bg-slate-900 hover:bg-black text-white hover:-translate-y-1'
+          : 'bg-slate-900 hover:bg-black text-white hover:-translate-y-1 cursor-pointer'
         }`}
       >
         {isLoading ? (
@@ -980,6 +902,12 @@ const App: React.FC = () => {
               <span>{loadingStep}</span>
             </div>
           </>
+        ) : !currentAnswerKey ? (
+          <span className="text-sm">Please Prepare Answer Key in Step 1 First</span>
+        ) : currentAnswerKey.status !== 'approved' ? (
+          <span className="text-sm">Approve Answer Key in Step 1 to Enable Evaluation</span>
+        ) : !sourceDoc ? (
+          <span className="text-sm">Upload Student Answer Sheet in Step 2 to Evaluate</span>
         ) : (
           "Run Evaluation"
         )}

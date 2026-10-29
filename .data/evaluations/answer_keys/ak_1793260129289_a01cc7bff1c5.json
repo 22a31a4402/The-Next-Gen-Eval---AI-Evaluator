@@ -1,0 +1,56 @@
+{
+  "id": "ak_1793260129289_a01cc7bff1c5",
+  "examId": "exam_1793260129289",
+  "title": "Extracted Official Model Answer Key",
+  "subject": "Anatomy",
+  "grade": "MBBS Year 1",
+  "sourceMode": "uploaded",
+  "version": 1,
+  "status": "draft",
+  "totalMaxMarks": 15,
+  "questions": [
+    {
+      "questionId": "1",
+      "maxMarks": 10,
+      "referenceAnswer": "Model answer for Question 1 from faculty notes.",
+      "expectedConcepts": [
+        "Concept A",
+        "Concept B"
+      ],
+      "acceptableAlternatives": [
+        "Alternative 1"
+      ],
+      "markingCriteria": [
+        "5 marks for part 1",
+        "5 marks for part 2"
+      ],
+      "diagramReferences": [],
+      "confidence": 0.96
+    },
+    {
+      "questionId": "2",
+      "maxMarks": 5,
+      "referenceAnswer": "Model answer for Question 2.",
+      "expectedConcepts": [
+        "Concept C"
+      ],
+      "acceptableAlternatives": [],
+      "markingCriteria": [
+        "5 marks for comprehensive answer"
+      ],
+      "diagramReferences": [],
+      "confidence": 0.92
+    }
+  ],
+  "metadata": {
+    "institutionId": "inst_aarshiv_1793260129286",
+    "createdBy": "prof_sharma_1793260129286",
+    "createdAt": 1793260129289,
+    "updatedAt": 1793260129289,
+    "sourceDocName": "Official_Key_Anatomy.pdf"
+  },
+  "sourceAnswerKeyDoc": {
+    "name": "Official_Key_Anatomy.pdf",
+    "text": "Official Marking Scheme: Q1. Median nerve model answer (10 marks). Q2. Carpal bones and syndrome (5 marks)."
+  }
+}

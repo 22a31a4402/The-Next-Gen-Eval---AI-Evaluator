@@ -7,7 +7,7 @@
  * - Structures context with strict delimiter boundaries
  */
 
-import { EvaluationMode } from './types';
+import { EvaluationMode, CanonicalAnswerKey } from './types';
 
 export interface PreparedEvaluationInput {
   contentsParts: any[];
@@ -23,6 +23,7 @@ export class DocumentProcessor {
     sourceDoc: { name: string; text?: string; base64?: string; mimeType?: string };
     questionPaper?: { name: string; text?: string; base64?: string; mimeType?: string };
     answerKey?: { name: string; text?: string; base64?: string; mimeType?: string };
+    canonicalAnswerKey?: CanonicalAnswerKey;
     facultyNotes?: { name: string; text?: string; base64?: string; mimeType?: string } | null;
     mode: EvaluationMode;
     studentName?: string;
@@ -49,9 +50,41 @@ export class DocumentProcessor {
       }
     }
 
-    // 2. Prepare Answer Key
+    // 2. Prepare Answer Key (Canonical Structured or Raw Document)
     let akSection = '';
-    if (payload.answerKey) {
+    if (payload.canonicalAnswerKey) {
+      const ak = payload.canonicalAnswerKey;
+      akSection += `--- AUTHORITATIVE APPROVED CANONICAL ANSWER KEY (v${ak.version}, Mode: ${ak.sourceMode}) ---\n`;
+      akSection += `EXAM TITLE: ${ak.title}\n`;
+      akSection += `TOTAL MAX MARKS: ${ak.totalMaxMarks}\n\n`;
+      akSection += `APPROVED QUESTIONS & MARKING SCHEME:\n`;
+      for (const q of ak.questions) {
+        akSection += `[Question ${q.questionId}] (Max Marks: ${q.maxMarks})\n`;
+        if (q.questionText) akSection += `Question: ${q.questionText}\n`;
+        akSection += `Reference Answer: ${q.referenceAnswer}\n`;
+        if (q.expectedConcepts && q.expectedConcepts.length > 0) {
+          akSection += `Expected Concepts:\n${q.expectedConcepts.map((c) => `  - ${c}`).join('\n')}\n`;
+        }
+        if (q.acceptableAlternatives && q.acceptableAlternatives.length > 0) {
+          akSection += `Acceptable Alternatives:\n${q.acceptableAlternatives.map((a) => `  - ${a}`).join('\n')}\n`;
+        }
+        if (q.markingCriteria && q.markingCriteria.length > 0) {
+          akSection += `Marking Criteria (Partial Credit):\n${q.markingCriteria.map((m) => `  - ${m}`).join('\n')}\n`;
+        }
+        akSection += '\n';
+      }
+
+      if (ak.sourceAnswerKeyDoc?.base64 && ak.sourceAnswerKeyDoc?.mimeType) {
+        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual Reference)` });
+        contentsParts.push({
+          inlineData: {
+            data: ak.sourceAnswerKeyDoc.base64,
+            mimeType: ak.sourceAnswerKeyDoc.mimeType,
+          },
+        });
+        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY (Visual Reference)` });
+      }
+    } else if (payload.answerKey) {
       if (payload.answerKey.text && payload.answerKey.text.trim().length > 30) {
         akSection += `--- OFFICIAL ANSWER KEY (THE ABSOLUTE ACADEMIC TRUTH) ---\n${payload.answerKey.text.trim()}\n\n`;
       } else if (payload.answerKey.base64 && payload.answerKey.mimeType) {

@@ -1,25 +1,83 @@
 {
   "id": "e4f4bff3-6380-4e78-89ff-49818d604408",
   "correlationId": "eval_1792677050134_49f3f6f2",
-  "status": "grading",
-  "progressPercent": 45,
-  "currentStepMessage": "Invoking academic evaluation with Gemini...",
+  "status": "completed",
+  "progressPercent": 100,
+  "currentStepMessage": "Evaluation complete and verified",
   "mode": "without-manual",
   "studentName": "John Doe",
   "testTitle": "Biology Test 1",
   "createdAt": 1792677050134,
-  "updatedAt": 1792677050139,
+  "updatedAt": 1792822229462,
   "metrics": {
     "correlationId": "eval_1792677050134_49f3f6f2",
-    "startTime": 1792677050138,
+    "startTime": 1792822118129,
     "cacheHit": false,
-    "retriesCount": 0,
-    "preprocessingLatencyMs": 0
+    "retriesCount": 2,
+    "preprocessingLatencyMs": 0,
+    "geminiLatencyMs": 111332,
+    "inputTokens": 979,
+    "outputTokens": 373,
+    "estimatedCostUsd": 0.000185,
+    "modelUsed": "gemini-3.1-flash-lite",
+    "validationLatencyMs": 0,
+    "totalLatencyMs": 111333,
+    "endTime": 1792822229462
   },
   "inputPayload": {
     "sourceDoc": {
       "name": "Test_Student.pdf",
       "text": "Answer 1: Photosynthesis converts light energy to chemical energy."
     }
+  },
+  "report": {
+    "studentName": "John Doe",
+    "testTitle": "Biology Assessment",
+    "testTopics": "Photosynthesis",
+    "testDate": "2023-10-27",
+    "totalScore": 5,
+    "maxScore": 5,
+    "questions": [
+      {
+        "qNo": "1",
+        "marks": 5,
+        "maxMarks": 5,
+        "isCorrect": true,
+        "feedbackPoints": [
+          "The student correctly identified the fundamental energy conversion process in photosynthesis.",
+          "The answer captures the essence of light energy being transformed into chemical energy stored in glucose."
+        ],
+        "isFlagged": false
+      }
+    ],
+    "generalFeedback": {
+      "overallPerformance": [
+        "Excellent understanding of the core concept of photosynthesis."
+      ],
+      "mcqs": [
+        "N/A"
+      ],
+      "contentAccuracy": [
+        "The statement provided is scientifically accurate."
+      ],
+      "completenessOfAnswers": [
+        "The answer is concise and covers the primary definition required."
+      ],
+      "presentationDiagrams": [
+        "No diagrams were required for this question."
+      ],
+      "investigations": [
+        "N/A"
+      ],
+      "attemptingQuestions": [
+        "The student successfully attempted the question."
+      ],
+      "actionPoints": [
+        "Continue to build on this foundation by exploring the specific stages of photosynthesis, such as the light-dependent and light-independent reactions."
+      ]
+    },
+    "evaluatedByModel": "gemini-3.1-flash-lite",
+    "id": "e4f4bff3-6380-4e78-89ff-49818d604408",
+    "timestamp": 1792822229462
   }
 }

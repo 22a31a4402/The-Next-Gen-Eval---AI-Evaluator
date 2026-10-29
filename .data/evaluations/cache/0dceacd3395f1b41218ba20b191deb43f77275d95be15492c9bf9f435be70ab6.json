@@ -1,0 +1,82 @@
+{
+  "cacheKey": "0dceacd3395f1b41218ba20b191deb43f77275d95be15492c9bf9f435be70ab6",
+  "report": {
+    "studentName": "Student 2",
+    "testTitle": "Anatomy Assessment",
+    "testTopics": "Upper Limb Anatomy",
+    "testDate": "2026-10-29",
+    "totalScore": 18,
+    "maxScore": 20,
+    "questions": [
+      {
+        "qNo": "1",
+        "marks": 9,
+        "maxMarks": 10,
+        "isCorrect": false,
+        "feedbackPoints": [
+          "Clear answer."
+        ],
+        "isFlagged": false
+      },
+      {
+        "qNo": "2.a",
+        "marks": 5,
+        "maxMarks": 5,
+        "isCorrect": true,
+        "feedbackPoints": [
+          "Full marks."
+        ],
+        "isFlagged": false
+      },
+      {
+        "qNo": "2.b",
+        "marks": 4,
+        "maxMarks": 5,
+        "isCorrect": false,
+        "feedbackPoints": [
+          "Well explained."
+        ],
+        "isFlagged": false
+      }
+    ],
+    "generalFeedback": {
+      "overallPerformance": [
+        "Good."
+      ],
+      "mcqs": [
+        "Objective questions evaluated."
+      ],
+      "contentAccuracy": [
+        "Good."
+      ],
+      "completenessOfAnswers": [
+        "Complete."
+      ],
+      "presentationDiagrams": [
+        "Good."
+      ],
+      "investigations": [
+        "Methodology steps reviewed."
+      ],
+      "attemptingQuestions": [
+        "Attempted."
+      ],
+      "actionPoints": [
+        "Keep it up."
+      ]
+    },
+    "evaluatedByModel": "gemini-3.8-flash",
+    "id": "811418a4-b2a3-4c99-9d1f-0c7c77719485",
+    "timestamp": 1793260139625,
+    "answerKeyId": "ak_1793260129287_8247eefd8595",
+    "answerKeyVersion": 2,
+    "answerKeySourceMode": "ai_generated"
+  },
+  "timestamp": 1793260139625,
+  "modelUsed": "gemini-3.8-flash",
+  "inputTokens": 3000,
+  "outputTokens": 500,
+  "estimatedCostSaved": 0.0005,
+  "institutionId": "inst_aarshiv_1793260129286",
+  "createdBy": "prof_sharma_1793260129286"
+}

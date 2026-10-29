@@ -1,4 +1,56 @@
 
+export type AnswerKeySourceMode = 'ai_generated' | 'uploaded';
+export type AnswerKeyStatus = 'draft' | 'needs_review' | 'approved';
+
+export interface CanonicalQuestionKey {
+  questionId: string;
+  subquestionId?: string;
+  questionText?: string;
+  maxMarks: number;
+  referenceAnswer: string;
+  expectedConcepts: string[];
+  acceptableAlternatives: string[];
+  markingCriteria: string[];
+  diagramReferences?: string[];
+  confidence?: number;
+  flaggedIssue?: string;
+}
+
+export interface CanonicalAnswerKey {
+  id: string;
+  examId: string;
+  title: string;
+  subject?: string;
+  grade?: string;
+  sourceMode: AnswerKeySourceMode;
+  version: number;
+  status: AnswerKeyStatus;
+  totalMaxMarks: number;
+  questions: CanonicalQuestionKey[];
+  warnings?: string[];
+  metadata: {
+    institutionId: string;
+    createdBy: string;
+    createdAt: number;
+    updatedAt: number;
+    approvedAt?: number;
+    approvedBy?: string;
+    sourceDocName?: string;
+  };
+  sourceQuestionPaperDoc?: {
+    name: string;
+    text?: string;
+    base64?: string;
+    mimeType?: string;
+  };
+  sourceAnswerKeyDoc?: {
+    name: string;
+    text?: string;
+    base64?: string;
+    mimeType?: string;
+  };
+}
+
 export interface QuestionFeedback {
   qNo: string;
   feedbackPoints: string[];
@@ -32,6 +84,9 @@ export interface EvaluationReport {
   generalFeedback: GeneralFeedbackSection;
   timestamp?: number;
   evaluatedByModel?: string;
+  answerKeyId?: string;
+  answerKeyVersion?: number;
+  answerKeySourceMode?: AnswerKeySourceMode;
 }
 
 export interface HistoryItem {

@@ -1,11 +1,19 @@
 /**
  * Cryptographic Evaluation Cache Service for NextGen Eval
- * Provides deterministic SHA-256 fingerprinting for:
- * - Document contents (student script, question paper, answer key, notes)
- * - Evaluation mode
- * - Prompt version & model ID
  *
- * Prevents redundant Gemini calls, minimizes token expenditure, and maintains observability.
+ * Implements Stage B & Stage G:
+ * - Deterministic, collision-resistant SHA-256 fingerprinting
+ * - Full-content cryptographic hashing over every byte/character of:
+ *   - Student answer script (entire text and entire visual base64 buffer)
+ *   - Question paper (complete text/base64, name, MIME type)
+ *   - Answer key (complete text/base64, name, MIME type)
+ *   - Faculty notes (complete text/base64, name, MIME type)
+ *   - Evaluation mode ('with-manual' vs 'without-manual')
+ *   - Prompt version and Model ID
+ *   - Generation settings (temperature, seed)
+ *   - Institution ID for tenant isolation
+ * - Enforces authorization checks before serving cached results
+ * - Atomic disk persistence and cache eviction policies
  */
 
 import crypto from 'crypto';
@@ -13,17 +21,21 @@ import fs from 'fs';
 import path from 'path';
 import { config } from './config';
 import { EvaluationReport } from './types';
+import { UserContext } from './auth';
 
-const PROMPT_VERSION = 'nextgen_eval_engine_v4.0';
+export const CACHE_PROMPT_VERSION = 'nextgen_eval_engine_v4.1_hardened';
 
 export interface CacheEntry {
   cacheKey: string;
   report: EvaluationReport;
   timestamp: number;
   modelUsed: string;
-  inputTokens: number;
-  outputTokens: number;
-  estimatedCostSaved: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens?: number | null;
+  estimatedCostSaved: number | null;
+  institutionId?: string;
+  createdBy?: string;
 }
 
 export class EvaluationCacheService {
@@ -44,69 +56,143 @@ export class EvaluationCacheService {
   }
 
   /**
-   * Generates a cryptographic SHA-256 fingerprint
+   * Generates a deterministic SHA-256 fingerprint by hashing 100% of the contents
+   * of all grading-relevant documents with canonical unambiguous delimiters.
    */
   public generateFingerprint(payload: {
-    sourceDoc: { text?: string; base64?: string; name?: string };
-    questionPaper?: { text?: string; base64?: string; name?: string };
-    answerKey?: { text?: string; base64?: string; name?: string };
-    facultyNotes?: { text?: string; base64?: string; name?: string } | null;
+    sourceDoc: { text?: string; base64?: string; name?: string; mimeType?: string };
+    questionPaper?: { text?: string; base64?: string; name?: string; mimeType?: string };
+    answerKey?: { text?: string; base64?: string; name?: string; mimeType?: string };
+    facultyNotes?: { text?: string; base64?: string; name?: string; mimeType?: string } | null;
     mode: string;
     model: string;
+    generationSettings?: { temperature?: number; seed?: number };
+    institutionId?: string;
   }): string {
     const hash = crypto.createHash('sha256');
-    hash.update(PROMPT_VERSION);
-    hash.update(payload.mode || 'with-manual');
-    hash.update(payload.model || config.primaryModel);
 
-    // Hash source doc
-    hash.update(payload.sourceDoc.name || '');
-    if (payload.sourceDoc.text) hash.update(payload.sourceDoc.text);
-    if (payload.sourceDoc.base64) {
-      // Hash first 1000 and last 1000 bytes + length to be fast and unique
-      hash.update(`${payload.sourceDoc.base64.length}:${payload.sourceDoc.base64.slice(0, 1000)}:${payload.sourceDoc.base64.slice(-1000)}`);
+    // 1. Static Metadata & Prompt Version
+    hash.update(`PROMPT_VERSION:${CACHE_PROMPT_VERSION}\n`);
+    hash.update(`MODE:${payload.mode || 'with-manual'}\n`);
+    hash.update(`MODEL:${payload.model || config.primaryModel}\n`);
+    hash.update(`INSTITUTION:${payload.institutionId || 'inst_aarshiv_01'}\n`);
+
+    const temp = payload.generationSettings?.temperature ?? 0;
+    const seed = payload.generationSettings?.seed ?? 42;
+    hash.update(`GEN_SETTINGS:temp=${temp}:seed=${seed}\n`);
+
+    // 2. Full Hashing of Source Document (Student Script)
+    const src = payload.sourceDoc || {};
+    hash.update(`SRC_NAME:${src.name || ''}\n`);
+    hash.update(`SRC_MIME:${src.mimeType || ''}\n`);
+    if (src.text) {
+      hash.update(`SRC_TEXT_LEN:${src.text.length}\n`);
+      hash.update(src.text);
+      hash.update('\n');
+    }
+    if (src.base64) {
+      // Digest 100% of the student's base64 document buffer to catch even 1-byte mutations
+      hash.update(`SRC_B64_LEN:${src.base64.length}\n`);
+      hash.update(src.base64);
+      hash.update('\n');
     }
 
-    // Hash question paper if present
+    // 3. Full Hashing of Question Paper
     if (payload.questionPaper) {
-      hash.update(payload.questionPaper.name || '');
-      if (payload.questionPaper.text) hash.update(payload.questionPaper.text);
-      if (payload.questionPaper.base64) {
-        hash.update(`${payload.questionPaper.base64.length}:${payload.questionPaper.base64.slice(0, 500)}`);
+      const qp = payload.questionPaper;
+      hash.update(`QP_NAME:${qp.name || ''}\n`);
+      hash.update(`QP_MIME:${qp.mimeType || ''}\n`);
+      if (qp.text) {
+        hash.update(`QP_TEXT_LEN:${qp.text.length}\n`);
+        hash.update(qp.text);
+        hash.update('\n');
+      }
+      if (qp.base64) {
+        hash.update(`QP_B64_LEN:${qp.base64.length}\n`);
+        hash.update(qp.base64);
+        hash.update('\n');
       }
     }
 
-    // Hash answer key if present
-    if (payload.answerKey) {
-      hash.update(payload.answerKey.name || '');
-      if (payload.answerKey.text) hash.update(payload.answerKey.text);
-      if (payload.answerKey.base64) {
-        hash.update(`${payload.answerKey.base64.length}:${payload.answerKey.base64.slice(0, 500)}`);
+    // 4. Full Hashing of Answer Key (Canonical or Raw Document)
+    if ((payload as any).canonicalAnswerKey) {
+      const cak = (payload as any).canonicalAnswerKey;
+      hash.update(`CANONICAL_AK_ID:${cak.id}\n`);
+      hash.update(`CANONICAL_AK_VERSION:${cak.version}\n`);
+      hash.update(`CANONICAL_AK_STATUS:${cak.status}\n`);
+      hash.update(`CANONICAL_AK_TOTAL:${cak.totalMaxMarks}\n`);
+      if (Array.isArray(cak.questions)) {
+        for (const q of cak.questions) {
+          hash.update(`Q:${q.questionId}:${q.maxMarks}:${q.referenceAnswer || ''}\n`);
+        }
+      }
+    } else if (payload.answerKey) {
+      const ak = payload.answerKey;
+      hash.update(`AK_NAME:${ak.name || ''}\n`);
+      hash.update(`AK_MIME:${ak.mimeType || ''}\n`);
+      if (ak.text) {
+        hash.update(`AK_TEXT_LEN:${ak.text.length}\n`);
+        hash.update(ak.text);
+        hash.update('\n');
+      }
+      if (ak.base64) {
+        hash.update(`AK_B64_LEN:${ak.base64.length}\n`);
+        hash.update(ak.base64);
+        hash.update('\n');
       }
     }
 
-    // Hash faculty notes if mode is with-manual
+    // 5. Full Hashing of Faculty Notes (only if mode is 'with-manual')
     if (payload.mode === 'with-manual' && payload.facultyNotes) {
-      hash.update(payload.facultyNotes.name || '');
-      if (payload.facultyNotes.text) hash.update(payload.facultyNotes.text);
-      if (payload.facultyNotes.base64) {
-        hash.update(`${payload.facultyNotes.base64.length}:${payload.facultyNotes.base64.slice(0, 500)}`);
+      const fn = payload.facultyNotes;
+      hash.update(`FN_NAME:${fn.name || ''}\n`);
+      hash.update(`FN_MIME:${fn.mimeType || ''}\n`);
+      if (fn.text) {
+        hash.update(`FN_TEXT_LEN:${fn.text.length}\n`);
+        hash.update(fn.text);
+        hash.update('\n');
+      }
+      if (fn.base64) {
+        hash.update(`FN_B64_LEN:${fn.base64.length}\n`);
+        hash.update(fn.base64);
+        hash.update('\n');
       }
     }
 
     return hash.digest('hex');
   }
 
-  public get(key: string): CacheEntry | null {
+  /**
+   * Retrieves a cached report if valid, unexpired, and caller is authorized
+   */
+  public get(key: string, userContext?: UserContext | null): CacheEntry | null {
     this.totalRequests++;
+
+    const checkEntry = (entry: CacheEntry): CacheEntry | null => {
+      // TTL verification
+      if (Date.now() - entry.timestamp > config.cacheTtlMs) {
+        return null;
+      }
+
+      // Authorization verification:
+      // If userContext is passed, verify tenant isolation
+      if (userContext && userContext.role !== 'operator') {
+        const cachedInst = entry.institutionId || 'inst_aarshiv_01';
+        if (cachedInst !== userContext.institutionId) {
+          console.warn(`[CacheService] Unauthorized cache access attempt across institutions: user=${userContext.institutionId}, cached=${cachedInst}`);
+          return null;
+        }
+      }
+
+      this.cacheHits++;
+      return entry;
+    };
 
     // 1. Check memory cache
     const memEntry = this.memoryCache.get(key);
     if (memEntry) {
-      if (Date.now() - memEntry.timestamp < config.cacheTtlMs) {
-        this.cacheHits++;
-        return memEntry;
-      }
+      const valid = checkEntry(memEntry);
+      if (valid) return valid;
       this.memoryCache.delete(key);
     }
 
@@ -116,12 +202,14 @@ export class EvaluationCacheService {
       if (fs.existsSync(filePath)) {
         const data = fs.readFileSync(filePath, 'utf-8');
         const entry = JSON.parse(data) as CacheEntry;
-        if (Date.now() - entry.timestamp < config.cacheTtlMs) {
-          this.memoryCache.set(key, entry);
-          this.cacheHits++;
-          return entry;
+        const valid = checkEntry(entry);
+        if (valid) {
+          this.memoryCache.set(key, valid);
+          return valid;
         } else {
-          fs.unlinkSync(filePath);
+          try {
+            fs.unlinkSync(filePath);
+          } catch {}
         }
       }
     } catch (e) {
@@ -131,11 +219,16 @@ export class EvaluationCacheService {
     return null;
   }
 
+  /**
+   * Stores a successfully validated evaluation report into the cache
+   */
   public set(entry: CacheEntry): void {
     this.memoryCache.set(entry.cacheKey, entry);
     try {
+      const tempPath = path.join(this.cacheDir, `${entry.cacheKey}.tmp.${Date.now()}`);
       const filePath = path.join(this.cacheDir, `${entry.cacheKey}.json`);
-      fs.writeFileSync(filePath, JSON.stringify(entry), 'utf-8');
+      fs.writeFileSync(tempPath, JSON.stringify(entry, null, 2), 'utf-8');
+      fs.renameSync(tempPath, filePath);
     } catch (e) {
       console.warn('[CacheService] Failed persisting to disk cache:', e);
     }
@@ -149,6 +242,10 @@ export class EvaluationCacheService {
       hitRatePercent: parseFloat(hitRate.toFixed(2)),
       memoryEntriesCount: this.memoryCache.size,
     };
+  }
+
+  public clear(): void {
+    this.memoryCache.clear();
   }
 }
 

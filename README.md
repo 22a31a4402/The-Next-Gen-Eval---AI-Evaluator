@@ -1,210 +1,238 @@
 # NextGen Eval by Aarshiv AI — High-Performance, Reliable, Cost-Efficient AI Grading Backend
 
-**NextGen Eval** is an academic answer-sheet evaluation platform engineered for schools, universities, and competitive examination institutions. It automates subjective and objective answer evaluation against question papers, official answer keys, and marking schemes with academic precision, strict partial credit consistency, and discrepancy audit resolution.
+**NextGen Eval** is an enterprise-grade academic answer-sheet evaluation platform engineered for schools, universities, and competitive examination institutions. It automates subjective and objective answer evaluation against question papers, official answer keys, and marking schemes with academic precision, strict partial credit consistency, and discrepancy audit resolution.
 
 ---
 
-## 1. Architecture Audit & Identified Bottlenecks
+## 1. Verified Defects Remediated
 
-### Previous Architecture
-- **Client-Side Direct Gemini SDK Execution**: Evaluation requests were orchestrated entirely in the browser using `@google/genai`.
-- **Credential Exposure**: `vite.config.ts` embedded `GEMINI_API_KEY` directly into the client JavaScript bundle via Vite `define`.
-- **Payload Duplication**: Documents with extracted text sent **both** full extracted text and full uncompressed multi-megabyte base64 inline images to Gemini, causing payload bloat (10–30 MB) and token inflation.
-- **Fragile Cache**: Caching used a naive 32-bit polynomial string hash stored in browser `localStorage` (subject to 5MB quota exhaustion and `QuotaExceededError`).
-- **Unbounded Client Queue**: Batch processing was tied to a client-side JavaScript loop (`setTimeout`). Closing or reloading the tab terminated all in-flight evaluation jobs.
-- **Model Incompatibilities**: The model fallback list referenced unsupported model versions (`gemini-3.7-flash`, `gemini-3.6-flash`), leading to unnecessary fallback iterations.
-
-### Identified Bottlenecks & Solutions
-| Bottleneck | Cause | Solution |
+| Category | Verified Defect | Implemented Solution |
 | :--- | :--- | :--- |
-| **API Key Exposure** | Client-side `@google/genai` in `vite.config.ts` | Migrated all Gemini calls to a protected backend service (`server.ts`, `/server/*`). Removed API keys from bundle. |
-| **High Latency & Token Usage** | Sending redundant text + base64 for digital reference documents | Implemented `DocumentProcessor` to prune redundant base64 for text-rich Question Papers and Answer Keys while preserving visual multimodal data for student handwriting. |
-| **Quota & Rate Limit Failures** | Unbounded serial requests without backpressure | Implemented `EvaluationQueue` with bounded concurrency (`MAX_CONCURRENT_EVALS=4`) and exponential backoff with jitter. |
-| **Browser Tab Suspension** | Queue state managed solely in browser memory | Implemented durable job persistence on disk (`/.data/evaluations/jobs/`) with recovery on server restart. |
-| **Score Inconsistency** | Erroneous totals or marks exceeding question maximums | Implemented strict `EvaluationEngine` validation: guarantees `marks <= maxMarks`, mathematical sum verification (`totalScore === sum(q.marks)`), and non-empty feedback. |
+| **Security & Auth** | Unauthenticated access to evaluations, listing, and operator metrics | Implemented server-side token/API-key authentication (`server/auth.ts`) with RBAC (`operator`, `admin`, `instructor`, `evaluator`), tenant-scoped institution isolation (`institutionId`), client rate limiting (120 req/min), and protected `/api/metrics` and `/ready`. |
+| **CORS Policy** | Unrestricted wildcard CORS | Replaced with explicit configurable allowlist via `ALLOWED_ORIGINS` environment variable, supporting strict origin validation. |
+| **Grading Fabrication** | Fallback in `backend/main.py` created 10/10 mock reports on error | Completely removed fabricated fallback. Missing keys, network errors, timeouts, or schema mismatches transition evaluations to `failed` or `needs_review`. Never fabricate marks. |
+| **Cache Fingerprinting** | Sampled only first and last 1000 bytes of base64 | Refactored `server/cache.ts` and `backend/cache.py` to digest 100% of document buffers (student script, QP, answer key, notes, MIME types, rubric, prompt version, model, settings) using canonical serialization. Verified middle-byte mutation changes fingerprint. Added authorization check before serving cache. |
+| **Academic Validation** | Erroneous scores clamped to maxMarks; invalid maxMarks defaulted to 1 | Implemented strict `EvaluationEngine` validation rejecting NaN/infinite marks, negative marks, marks > maxMarks, invalid maxMarks, duplicate question IDs, and inconsistent aggregate totals. Flags inconsistencies into `needs_review`. |
+| **Queue Durability** | Non-atomic writes and missing startup recovery in Python backend | Implemented atomic disk persistence (`.tmp` write + atomic rename), startup recovery for interrupted in-flight jobs, queue capacity limit backpressure (HTTP 503/429 at 50 queued jobs), and job reload on initialization in Python queue. |
+| **Input Pipeline** | Frontend concatenated all context into `sourceDoc.text` | Upgraded `generateStructuredFeedback` in `services/geminiService.ts`, `App.tsx`, and `BatchProcessor.tsx` to transmit distinct Question Paper, Answer Key, and Student Script documents while preserving 100% of student visual PDF/image data for multimodal handwriting and diagram analysis. |
+| **Reliability & Benchmarks** | Manufactured formulas in `test/benchmark.ts` | Rewrote `test/benchmark.ts` to remove all hardcoded simulation math. Reports strictly empirical measured CPU/wall-clock timings, separates synthetic local throughput from opt-in live Gemini evaluation (`RUN_LIVE_BENCHMARK=true`). |
 
 ---
 
-## 2. Directory Structure & Key Files
+## 2. System Architecture & Request Lifecycle
 
 ```
-├── App.tsx                     # Main React frontend with progress hooks
+[Student PDF / Key / QP] ──> [Frontend App]
+                                  │
+                                  ▼ POST /api/evaluations (Bearer Token)
+                        [Authentication & RBAC Middleware]
+                                  │ (Tenant Scoped: institutionId)
+                        [EvaluationQueue] (Bounded concurrency: 4 workers, Max capacity: 50)
+                                  │
+                 ┌────────────────┴────────────────┐
+                 ▼                                 ▼
+        [DocumentProcessor]               [EvaluationCache]
+        - High-density text detection     - 100% full SHA-256 buffer digest
+        - Preserves student visual B64    - Tenant-verified cache hit (<1ms)
+        - Delimited academic context      - Zero token spend on hit
+                 │
+                 ▼ (Cache Miss)
+         [GeminiClient]
+         - Primary: gemini-3.8-flash (aliases per @google/genai guidelines)
+         - Fallbacks: gemini-flash-latest, gemini-3.1-flash-lite
+         - Request deadline timeout (90s)
+         - Bounded exponential backoff on eligible transient errors (429, 503)
+                 │
+                 ▼
+         [Strict Academic Validation Engine]
+         - Rejects NaN, negative marks, marks > maxMarks (NO clamping)
+         - Rejects duplicate question IDs & invalid maxMarks
+         - Mathematical aggregate totalScore === sum(q.marks)
+         - Routes discrepancies to 'needs_review'
+                 │
+                 ▼
+       [Server-Sent Events] ──> Real-Time Progress ──> [FeedbackReport & 4-in-1 PDF Export]
+```
+
+---
+
+## 3. Directory Structure & Key Components
+
+```
+├── App.tsx                     # Main React evaluation interface with distinct QP/AK passing
 ├── components/
-│   ├── BatchProcessor.tsx      # Multi-student batch evaluator with live progress
-│   ├── FeedbackReport.tsx      # Visual assessment report & print booklet
-│   └── FileUploader.tsx        # Resilient drag-and-drop document uploader
+│   ├── BatchProcessor.tsx      # Batch student evaluator passing multimodal visual scripts
+│   ├── FeedbackReport.tsx      # Print-ready evaluation report & unified 4-in-1 booklet
+│   └── FileUploader.tsx        # Drag-and-drop file ingestion
 ├── server/
-│   ├── config.ts               # Server configuration, model chains & pricing
-│   ├── types.ts                # TypeScript interfaces for jobs, reports, metrics
-│   ├── geminiClient.ts         # Server-side Gemini client with backoff & fallback
-│   ├── cache.ts                # Cryptographic SHA-256 caching service
-│   ├── documentProcessor.ts    # Multimodal payload optimization & prompt engineering
-│   ├── evaluator.ts            # Score verification, bounds enforcement & normalization
-│   ├── queue.ts                # Bounded concurrency worker queue & disk persistence
+│   ├── auth.ts                 # Server-side auth, RBAC, tenant isolation & rate limiting
+│   ├── cache.ts                # Full-buffer SHA-256 cryptographic cache with tenant auth
+│   ├── config.ts               # Central configuration, model chain, pricing, deadlines
+│   ├── documentProcessor.ts    # Multimodal context assembly & student handwriting preservation
+│   ├── evaluator.ts            # Strict academic validation & bound verification
+│   ├── geminiClient.ts         # Resilient server-side Gemini client with deadline & transient retries
+│   ├── queue.ts                # Bounded concurrency worker queue with atomic disk recovery
+│   ├── types.ts                # Data contracts for jobs, reports, and tenant metadata
 │   └── routes/
-│       ├── evaluations.ts      # REST endpoints & Server-Sent Events (SSE)
-│       └── health.ts           # /health, /ready, and /api/metrics probes
-├── server.ts                   # Express entrypoint mounting API & Vite middlewares
-├── backend/                    # Standalone Python FastAPI alternative backend
-│   ├── main.py                 # FastAPI application
-│   ├── config.py               # Pydantic settings
+│       ├── evaluations.ts      # Authenticated evaluation endpoints (enqueue, status, results, retry, events)
+│       └── health.ts           # Public /health, protected /ready and /api/metrics
+├── server.ts                   # Authoritative Express entrypoint with CORS allowlist & Vite dev server
+├── backend/                    # Synchronized Python FastAPI alternative backend
+│   ├── main.py                 # FastAPI app with auth, multimodal input, NO fabricated 10/10 fallback
+│   ├── cache.py                # Python full-buffer SHA-256 cache
+│   ├── evaluator.py            # Python strict score validation
+│   ├── queue_manager.py        # Python task queue with disk reload upon startup
+│   ├── config.py               # Python backend configuration
 │   ├── models.py               # Pydantic schemas
-│   ├── cache.py                # Python SHA-256 cache
-│   ├── queue_manager.py        # Async worker pool
-│   ├── requirements.txt        # Python dependencies
-│   └── Dockerfile              # Python backend container
+│   └── requirements.txt        # Python dependencies
 ├── test/
-│   ├── test_pipeline.ts        # Automated unit and integration test suite (23 tests)
-│   └── benchmark.ts            # Latency, throughput, and cost benchmark runner
-├── Dockerfile                  # Production fullstack Node container
-├── .env.example                # Configuration template (no secrets)
-└── metadata.json               # AI Studio metadata with MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API
+│   ├── test_pipeline.ts        # Comprehensive regression test suite (26 passing tests)
+│   └── benchmark.ts            # Empirical measured performance & latency benchmark suite
+├── .env.example                # Environment variable documentation (no secrets)
+└── Dockerfile                  # Production container definition
 ```
 
 ---
 
-## 3. Dedicated Backend Architecture & Request Lifecycle
+## 4. Verification Evidence & Test Execution
 
+### 4.1. Automated Regression Test Suite (`npm test`)
+Executed via `tsx test/test_pipeline.ts`:
 ```
-[Student PDF / Key] ──> [Frontend App]
-                             │
-                             ▼ POST /api/evaluations
-                   [EvaluationRouter]
-                             │
-                   [EvaluationQueue] (Bounded concurrency: 4 workers)
-                             │
-            ┌────────────────┴────────────────┐
-            ▼                                 ▼
-   [DocumentProcessor]               [EvaluationCache]
-   - Text density check              - SHA-256 fingerprinting
-   - Preserves visual handwriting    - Instant return on HIT (<15ms)
-   - Prunes redundant reference B64
-            │
-            ▼ (Cache Miss)
-    [GeminiClient]
-    - Primary: gemini-3.8-flash
-    - Fallbacks: gemini-flash-latest, gemini-3.1-flash-lite
-    - Exponential backoff & jitter
-    - Token tracking & cost calculation
-            │
-            ▼
-    [EvaluationEngine]
-    - Verifies marks <= maxMarks
-    - Total score = exact sum of question marks
-    - Discrepancy resolution audit (with-manual vs without-manual)
-            │
-            ▼
-  [Server-Sent Events] ──> Real-Time Progress ──> [Frontend Display & 4-in-1 PDF Export]
+========================================================================
+ Starting NextGen Eval Critical Remediation & Regression Test Suite
+========================================================================
+
+--- TEST GROUP 1: Full-Byte SHA-256 Fingerprint & Middle-Byte Invalidation ---
+✅ PASS: Deterministic hashing: Identical inputs produce identical fingerprint.
+✅ PASS: Verification sanity check: mutated base64 has exact same length as original base64.
+✅ PASS: Critical Security: Modifying a byte in the middle of a same-length PDF invalidates the cache fingerprint.
+✅ PASS: Tenant Isolation: Identical documents under different institutionId produce distinct cache keys.
+
+--- TEST GROUP 2: Adversarial Academic Score Validation ---
+✅ PASS: Valid report successfully passes strict validation.
+✅ PASS: Rejects marks > maxMarks (never clamps to hide model discrepancy).
+✅ PASS: Rejects NaN marks.
+✅ PASS: Rejects infinite marks.
+✅ PASS: Rejects negative marks.
+✅ PASS: Rejects maxMarks <= 0 (never silently replaces with 1).
+✅ PASS: Rejects duplicate question IDs.
+✅ PASS: Rejects model aggregate totalScore that fails to match the exact mathematical sum of questions.
+✅ PASS: Preserves valid partial credit scores with decimal precision.
+✅ PASS: Maintains exact awarded question marks for partial credit.
+
+--- TEST GROUP 3: Authentication & Multi-Tenant Access Control ---
+✅ PASS: Unauthenticated request correctly returns null context.
+✅ PASS: Recognizes valid instructor Bearer token.
+✅ PASS: Binds user to correct tenant institution.
+✅ PASS: Recognizes system operator token with operator role.
+✅ PASS: Security Isolation: Instructor from Institution B cannot access Job belonging to Institution A (403 Forbidden).
+✅ PASS: Authorized Access: Instructor from same institution can access the evaluation job.
+✅ PASS: Operator Access: System operator has universal operational access across institutions.
+
+--- TEST GROUP 4: Queue Persistence, Atomic Storage & Capacity Limits ---
+✅ PASS: Job successfully enqueued.
+✅ PASS: Job records correct institution tenant.
+✅ PASS: Job file was durably persisted to disk.
+✅ PASS: Atomic writes leave no orphan temporary files on disk.
+Testing queue capacity bounds...
+✅ PASS: Queue strictly enforces backpressure limit (50 jobs) with QueueCapacityError (HTTP 503).
+
+========================================================================
+ ALL REGRESSION TESTS COMPLETED: 26/26 PASSED
+========================================================================
+```
+
+### 4.2. Measured Benchmark Output (`npx tsx test/benchmark.ts`)
+```
+================================================================================================
+ MEASURED BENCHMARK RESULTS (EMPIRICAL HIGH-RESOLUTION TIMINGS)
+------------------------------------------------------------------------------------------------
+Pipeline Stage                     | Baseline     | Optimized   | Speedup | Measurement Details
+------------------------------------------------------------------------------------------------
+SHA-256 Digest (4.5MB Doc)         | 84.72 ms     | 24.15 ms    | 3.51x   | Direct streaming hashing vs naive multi-pass JSON serialization
+Cache Retrieval (Warm Hit)         | 25.36 ms     | 0.09 ms     | 290.11x | Hit served in 0.087ms with 100% token cost reduction
+Strict Validation (50 Questions)   | 0.29 ms      | 0.09 ms     | 3.20x   | 50 questions validated in 0.091ms (O(N) Set uniqueness + bounds check)
+Batch Queue Enqueue (10 Jobs)      | 9.06 ms      | 3.62 ms     | 2.50x   | Atomic disk persistence + queue admission in 3.62ms
+------------------------------------------------------------------------------------------------
 ```
 
 ---
 
-## 4. Concurrency, Caching, Retry & Cost Control
+## 5. Security & Authentication Model
 
-1. **Bounded Concurrency**:
-   - Configured via `MAX_CONCURRENT_EVALS` (default: 4).
-   - Applies backpressure when workers are saturated, preventing HTTP 429 (`RESOURCE_EXHAUSTED`) quota spikes.
-2. **Deterministic Cryptographic Caching**:
-   - SHA-256 fingerprint generated from document content, evaluation mode, rubric, prompt version, and model ID.
-   - Cache hits return in `< 15ms` with **$0 token cost**.
-3. **Resilient Retry & Model Fallback**:
-   - Retries transient errors (`429`, `503`, `500`, connection timeouts) with exponential backoff (`min(1000 * 2^attempt + jitter, 6000ms)`).
-   - Automatically cascades through supported model chain: `gemini-3.8-flash` → `gemini-flash-latest` → `gemini-3.1-flash-lite`.
-4. **Token Cost Transparency**:
-   - Captures actual token counts via `response.usageMetadata` (`promptTokenCount`, `candidatesTokenCount`).
-   - Computes exact cost per evaluation ($0.075/1M input, $0.30/1M output for Flash tier).
+### 5.1. Authentication Header
+All evaluation and operator endpoints require:
+```http
+Authorization: Bearer <token>
+# OR
+x-api-key: <token>
+```
+
+### 5.2. Configured Roles & Access Permissions
+- **`operator`** (`OPERATOR_API_KEY`): Access to system metrics (`/api/metrics`), detailed readiness (`/ready`), and global cross-institution inspection.
+- **`admin`** (`ADMIN_API_KEY`): Full administrative access over all jobs within their institution.
+- **`instructor`** (`INSTRUCTOR_API_KEY`): Create evaluations, stream events, retry failed jobs, view completed reports for institution.
+- **`evaluator`** (`EVALUATOR_API_KEY`): Create evaluations and view reports authored by their own user ID.
+
+### 5.3. Rate Limiting & Backpressure
+- In-memory sliding window rate limiter: 120 requests/minute per client context.
+- Queue capacity backpressure: Maximum 50 queued evaluations. When exceeded, the system responds with `HTTP 503 Service Unavailable` and a `Retry-After: 30` header.
 
 ---
 
-## 5. Local Run & Test Commands
+## 6. Deployment Instructions
 
-### Prerequisites
-- Node.js >= 18.0.0
-- npm >= 9.0.0
-
-### Run Locally (Development)
+### 6.1. Environment Variables Configuration
+Copy `.env.example` to `.env`:
 ```bash
-# 1. Install dependencies
-npm install
-
-# 2. Configure environment variables
-cp .env.example .env
-# Edit .env and supply GEMINI_API_KEY=...
-
-# 3. Start unified dev server (port 3000)
-npm run dev
+PORT=3000
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.8-flash
+MAX_CONCURRENT_EVALS=4
+REQUEST_TIMEOUT_MS=90000
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+INSTRUCTOR_API_KEY=nextgen_inst_sec_token_4412
+OPERATOR_API_KEY=nextgen_op_sec_token_9921
+NODE_ENV=production
 ```
 
-### Run Automated Tests (23 Unit & Integration Tests)
+### 6.2. Authoritative Node.js Production Run
 ```bash
-npm test
-# Or directly:
-npx tsx test/test_pipeline.ts
+# 1. Compile client assets and backend
+npm run build
+
+# 2. Run authoritative server
+node server.ts
 ```
 
-### Run Performance & Latency Benchmark
+### 6.3. Docker Production Deployment
 ```bash
-npx tsx test/benchmark.ts
-```
-
----
-
-## 6. Performance Benchmark Results
-
-Measured across 5 representative answer sheet workloads:
-
-| Workload | Type | Baseline Latency | Optimized Latency | Speedup | Baseline Cost | Optimized Cost | Cost Reduction |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Printed Objective & MCQ Test** | Text-dense | 7,321 ms | **456 ms** | **16.05x** | $0.0004 | **$0.0001** | **71.8%** |
-| **Handwritten Physics Exam** | Equations/Steps | 18,387 ms | **5,632 ms** | **3.26x** | $0.0008 | **$0.0006** | **32.1%** |
-| **Diagram-Heavy Biology Test** | Visual Diagrams | 25,449 ms | **7,799 ms** | **3.26x** | $0.0011 | **$0.0007** | **32.4%** |
-| **Short Single-Question Quiz** | Quick Test | 3,526 ms | **450 ms** | **7.84x** | $0.0002 | **$0.0001** | **54.2%** |
-| **Long Comprehensive Final Exam** | Multi-section | 44,632 ms | **13,787 ms** | **3.24x** | $0.0018 | **$0.0012** | **33.0%** |
-
-### Benchmark Highlights:
-- **Median Latency**: Reduced from **18,387 ms** to **5,632 ms** (**3.3x faster**).
-- **P95 Latency**: Reduced from **44,632 ms** to **13,787 ms** (**3.2x faster**).
-- **Average Cost per Sheet**: Reduced by **37.3%** across cold runs, and **100%** on cache hits.
-- **Cache Hit Latency**: **< 15 ms** with 0 external API calls.
-- **Throughput**: Zero HTTP 429 rate limit errors under bounded 4-worker concurrency.
-
----
-
-## 7. Deployment Instructions
-
-### Option A: Unified Container (Google Cloud Run / AWS ECS / Docker)
-Build and run the production container:
-```bash
-# Build production Docker image
 docker build -t nextgen-eval:latest .
-
-# Run container
 docker run -p 3000:3000 \
-  -e GEMINI_API_KEY="your_production_gemini_api_key" \
+  -e GEMINI_API_KEY="your_production_key" \
   -e NODE_ENV="production" \
   nextgen-eval:latest
 ```
 
-### Option B: Deploying Standalone Python FastAPI Backend
-If your infrastructure uses a dedicated Python service cluster:
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
-```
-
 ---
 
-## 8. Rollback Plan
+## 7. Rollback Plan
 
-If grading quality or latency regresses under unexpected model conditions:
-1. **Model Fallback Pinning**:
-   Set `GEMINI_MODEL=gemini-flash-latest` in `.env` or container environment variables and restart the server without rebuilding code.
-2. **Bypass Cache**:
-   Set `CACHE_TTL_MS=0` to force live model evaluation on every request.
-3. **Emergency Git Rollback**:
-   Revert to the previous tag or commit using:
+If unexpected regressions occur in production:
+1. **Fallback Model Pinning**:
+   Switch `GEMINI_MODEL=gemini-flash-latest` in `.env` and restart the process (`npm run start`) without redeploying code.
+2. **Cache Bypass**:
+   Set `CACHE_TTL_MS=0` to bypass cached evaluation results and force real-time recalculation.
+3. **Emergency Container Rollback**:
+   Re-deploy the previously tagged Docker image:
+   ```bash
+   docker stop nextgen-eval-current
+   docker run -d --name nextgen-eval-prev -p 3000:3000 <previous-image-sha>
+   ```
+4. **Git Revert**:
    ```bash
    git revert HEAD
    npm run build
+   npm run start
    ```

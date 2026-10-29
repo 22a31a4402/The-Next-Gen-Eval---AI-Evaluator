@@ -3,9 +3,17 @@
  *
  * Implements Stage E (Concurrency & Scheduling):
  * - Bounded worker pool preventing Gemini rate limits & quota exhaustion
- * - Durable JSON file persistence so server restarts do not lose jobs
- * - Event-driven progress broadcasts for SSE and polling
- * - Graceful retry capability
+ * - Atomic disk persistence (.tmp write + atomic rename) preventing file corruption
+ * - Startup recovery for interrupted jobs with automatic rescheduling
+ * - Queue capacity limits and backpressure enforcement (HTTP 503 / 429)
+ * - Tenant-aware job ownership tracking (institutionId, createdBy)
+ * - Safe retry preventing duplicate runs
+ * - Retention policy and secure deletion
+ *
+ * DURABILITY NOTE:
+ * Local disk JSON storage provides crash-recovery across server restarts on persistent disk.
+ * In distributed multi-replica or containerized auto-scaling environments (e.g., Kubernetes/Cloud Run),
+ * replace local filesystem queue with Redis / BullMQ or Cloud SQL / PostgreSQL with distributed locking.
  */
 
 import fs from 'fs';
@@ -14,7 +22,18 @@ import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { config } from './config';
 import { evaluationEngine } from './evaluator';
-import { EvaluationJob, EvaluationMode, EvaluationReport, JobStatus } from './types';
+import { EvaluationJob, EvaluationMode, JobStatus } from './types';
+import { UserContext, verifyJobAccess } from './auth';
+
+export const MAX_QUEUE_CAPACITY = 50;
+
+export class QueueCapacityError extends Error {
+  public statusCode = 503;
+  constructor(message: string) {
+    super(message);
+    this.name = 'QueueCapacityError';
+  }
+}
 
 export class EvaluationQueue extends EventEmitter {
   private jobs = new Map<string, EvaluationJob>();
@@ -35,53 +54,116 @@ export class EvaluationQueue extends EventEmitter {
   }
 
   /**
-   * Load existing jobs from disk to survive server restarts
+   * Load existing jobs from disk and automatically recover interrupted jobs
    */
   private loadSavedJobs() {
     try {
       const files = fs.readdirSync(this.queueDir);
+      let recoveredCount = 0;
       for (const file of files) {
+        const filePath = path.join(this.queueDir, file);
+
+        // Clean up stale orphan temporary files older than 5 minutes
+        if (file.includes('.tmp.')) {
+          try {
+            const stat = fs.statSync(filePath);
+            if (Date.now() - stat.mtimeMs > 5 * 60 * 1000) {
+              fs.unlinkSync(filePath);
+              console.log(`[EvaluationQueue] Cleaned up stale temporary file: ${file}`);
+            }
+          } catch {}
+          continue;
+        }
+
         if (file.endsWith('.json')) {
-          const raw = fs.readFileSync(path.join(this.queueDir, file), 'utf-8');
-          const job = JSON.parse(raw) as EvaluationJob;
-          // If a job was running when server restarted, reset it to queued
-          if (job.status === 'grading' || job.status === 'preprocessing' || job.status === 'validating') {
-            job.status = 'queued';
-            job.currentStepMessage = 'Recovered after restart; queued for processing.';
+          try {
+            const raw = fs.readFileSync(filePath, 'utf-8');
+            if (!raw || raw.trim().length === 0) {
+              console.warn(`[EvaluationQueue] Corrupted empty job file removed: ${file}`);
+              fs.unlinkSync(filePath);
+              continue;
+            }
+
+            const job = JSON.parse(raw) as EvaluationJob;
+            if (!job.id || !job.status) {
+              console.warn(`[EvaluationQueue] Incomplete job record skipped: ${file}`);
+              continue;
+            }
+
+            // Startup recovery for in-flight jobs interrupted by restart
+            if (['preprocessing', 'grading', 'validating', 'assembling_report'].includes(job.status)) {
+              job.status = 'queued';
+              job.currentStepMessage = 'Recovered after restart; queued for processing.';
+              job.updatedAt = Date.now();
+              this.persistJob(job);
+              recoveredCount++;
+            }
+            this.jobs.set(job.id, job);
+          } catch (fileErr) {
+            console.warn(`[EvaluationQueue] Corrupted job file skipped: ${file}`, fileErr);
           }
-          this.jobs.set(job.id, job);
         }
       }
-      console.log(`[EvaluationQueue] Recovered ${this.jobs.size} jobs from durable storage.`);
+      console.log(`[EvaluationQueue] Loaded ${this.jobs.size} jobs from disk (${recoveredCount} recovered into queue).`);
+
+      // Automatically trigger worker scheduling for recovered jobs
+      setImmediate(() => this.processNext());
     } catch (e) {
       console.warn('[EvaluationQueue] Error recovering jobs:', e);
     }
   }
 
+  /**
+   * Atomic persistence to disk using temporary file and atomic rename
+   */
   private persistJob(job: EvaluationJob) {
+    const finalPath = path.join(this.queueDir, `${job.id}.json`);
+    const tempPath = path.join(this.queueDir, `${job.id}.tmp.${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+
     try {
-      const filePath = path.join(this.queueDir, `${job.id}.json`);
-      fs.writeFileSync(filePath, JSON.stringify(job, null, 2), 'utf-8');
+      fs.writeFileSync(tempPath, JSON.stringify(job, null, 2), 'utf-8');
+      fs.renameSync(tempPath, finalPath);
     } catch (e) {
-      console.warn(`[EvaluationQueue] Failed persisting job ${job.id}:`, e);
+      console.error(`[EvaluationQueue] Atomic persistence failure for job ${job.id}:`, e);
+      try {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      } catch {}
+      throw new Error(`Failed to durably persist evaluation job: ${(e as any)?.message}`);
     }
   }
 
+  public getQueuedCount(): number {
+    return Array.from(this.jobs.values()).filter((j) => j.status === 'queued').length;
+  }
+
   /**
-   * Enqueue a new evaluation job
+   * Enqueue a new evaluation job with capacity and rate backpressure checks
    */
-  public enqueue(payload: {
-    sourceDoc: { name: string; text?: string; base64?: string; mimeType?: string };
-    questionPaper?: { name: string; text?: string; base64?: string; mimeType?: string };
-    answerKey?: { name: string; text?: string; base64?: string; mimeType?: string };
-    facultyNotes?: { name: string; text?: string; base64?: string; mimeType?: string } | null;
-    mode?: EvaluationMode;
-    studentName?: string;
-    testTitle?: string;
-  }): EvaluationJob {
+  public enqueue(
+    payload: {
+      sourceDoc: { name: string; text?: string; base64?: string; mimeType?: string };
+      questionPaper?: { name: string; text?: string; base64?: string; mimeType?: string };
+      answerKey?: { name: string; text?: string; base64?: string; mimeType?: string };
+      answerKeyId?: string;
+      canonicalAnswerKey?: any;
+      facultyNotes?: { name: string; text?: string; base64?: string; mimeType?: string } | null;
+      mode?: EvaluationMode;
+      studentName?: string;
+      testTitle?: string;
+    },
+    userContext?: UserContext | null
+  ): EvaluationJob {
+    // Backpressure enforcement
+    const queuedCount = this.getQueuedCount();
+    if (queuedCount >= MAX_QUEUE_CAPACITY) {
+      throw new QueueCapacityError(
+        `Evaluation queue capacity reached (${queuedCount}/${MAX_QUEUE_CAPACITY} queued). Please wait for ongoing jobs to complete.`
+      );
+    }
+
     const id = crypto.randomUUID();
     const correlationId = `eval_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    const mode = payload.mode || 'with-manual';
+    const mode = payload.mode || 'without-manual';
 
     const job: EvaluationJob = {
       id,
@@ -92,8 +174,14 @@ export class EvaluationQueue extends EventEmitter {
       mode,
       studentName: payload.studentName || 'Student',
       testTitle: payload.testTitle || 'Academic Assessment',
+      institutionId: userContext?.institutionId || 'inst_aarshiv_01',
+      createdBy: userContext?.userId || 'anonymous',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      answerKeyId: payload.answerKeyId || payload.canonicalAnswerKey?.id,
+      answerKeyVersion: payload.canonicalAnswerKey?.version,
+      answerKeySourceMode: payload.canonicalAnswerKey?.sourceMode,
+      canonicalAnswerKey: payload.canonicalAnswerKey,
       metrics: {
         correlationId,
         startTime: Date.now(),
@@ -104,6 +192,8 @@ export class EvaluationQueue extends EventEmitter {
         sourceDoc: payload.sourceDoc,
         questionPaper: payload.questionPaper,
         answerKey: payload.answerKey,
+        answerKeyId: payload.answerKeyId || payload.canonicalAnswerKey?.id,
+        canonicalAnswerKey: payload.canonicalAnswerKey,
         facultyNotes: payload.facultyNotes,
       },
     };
@@ -112,7 +202,7 @@ export class EvaluationQueue extends EventEmitter {
     this.persistJob(job);
     this.emit('job:created', job);
 
-    // Schedule queue check
+    // Schedule queue worker
     setImmediate(() => this.processNext());
 
     return job;
@@ -122,16 +212,24 @@ export class EvaluationQueue extends EventEmitter {
     return this.jobs.get(id);
   }
 
-  public getAllJobs(): EvaluationJob[] {
-    return Array.from(this.jobs.values()).sort((a, b) => b.createdAt - a.createdAt);
+  public getAllJobs(userContext?: UserContext): EvaluationJob[] {
+    const all = Array.from(this.jobs.values()).sort((a, b) => b.createdAt - a.createdAt);
+    if (!userContext || userContext.role === 'operator') {
+      return all;
+    }
+    return all.filter((j) => verifyJobAccess(j, userContext));
   }
 
-  public retryJob(id: string): EvaluationJob | null {
+  public retryJob(id: string, userContext?: UserContext | null): EvaluationJob | null {
     const job = this.jobs.get(id);
     if (!job) return null;
 
+    if (userContext && !verifyJobAccess(job, userContext)) {
+      throw new Error('Forbidden: Unauthorized to retry this evaluation job.');
+    }
+
     if (job.status !== 'failed' && job.status !== 'needs_review') {
-      return job; // Only retry failed or needs_review jobs
+      return job;
     }
 
     job.status = 'queued';
@@ -148,23 +246,71 @@ export class EvaluationQueue extends EventEmitter {
     return job;
   }
 
+  public cancelJob(id: string, userContext?: UserContext | null): EvaluationJob | null {
+    const job = this.jobs.get(id);
+    if (!job) return null;
+
+    if (userContext && !verifyJobAccess(job, userContext)) {
+      throw new Error('Forbidden: Unauthorized to cancel this evaluation job.');
+    }
+
+    if (job.status === 'completed') {
+      throw new Error('Cannot cancel a completed evaluation job.');
+    }
+
+    job.status = 'cancelled';
+    job.currentStepMessage = 'Evaluation job was cancelled by user.';
+    job.updatedAt = Date.now();
+    this.persistJob(job);
+    this.emit('job:cancelled', job);
+    return job;
+  }
+
+  public deleteJob(id: string, userContext?: UserContext | null): boolean {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+
+    if (userContext && !verifyJobAccess(job, userContext)) {
+      throw new Error('Forbidden: Unauthorized to delete this evaluation job.');
+    }
+
+    this.jobs.delete(id);
+    try {
+      const filePath = path.join(this.queueDir, `${id}.json`);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (e) {
+      console.warn(`[EvaluationQueue] Failed unlinking job file ${id}:`, e);
+    }
+    return true;
+  }
+
   /**
-   * Process jobs with bounded worker concurrency
+   * Process jobs with bounded worker concurrency and prevent duplicate execution
    */
   private async processNext() {
     if (this.activeWorkers >= config.maxConcurrentEvaluations) {
-      return; // Concurrency limit reached; backpressure active
+      return;
     }
 
-    // Find next queued job
+    // Atomically find next queued job
     const nextJob = Array.from(this.jobs.values()).find((j) => j.status === 'queued');
     if (!nextJob) return;
+
+    // Immediately claim job to prevent duplicate assignment
+    nextJob.status = 'preprocessing';
+    nextJob.currentStepMessage = 'Initializing evaluation worker...';
+    nextJob.updatedAt = Date.now();
+    this.persistJob(nextJob);
 
     this.activeWorkers++;
     const job = nextJob;
 
     try {
-      console.log(`[EvaluationQueue] Starting job ${job.id} (${job.studentName}). Active workers: ${this.activeWorkers}/${config.maxConcurrentEvaluations}`);
+      console.log(
+        `[EvaluationQueue] Processing job ${job.id} (${job.studentName}). Concurrency: ${this.activeWorkers}/${config.maxConcurrentEvaluations}`
+      );
 
       const report = await evaluationEngine.evaluate(job, (percent, msg) => {
         job.progressPercent = percent;
@@ -181,28 +327,53 @@ export class EvaluationQueue extends EventEmitter {
       job.updatedAt = Date.now();
       this.persistJob(job);
       this.emit('job:completed', job);
-
     } catch (err: any) {
-      console.error(`[EvaluationQueue] Job ${job.id} failed:`, err);
-      job.status = 'failed';
-      job.error = err?.message || 'Unknown evaluation failure';
-      job.currentStepMessage = `Failed: ${job.error}`;
+      console.error(`[EvaluationQueue] Job ${job.id} error:`, err?.message || err);
+
+      // Distinguish academic validation review requirement from system failures
+      if (err?.name === 'ValidationError') {
+        job.status = 'needs_review';
+        job.error = `Academic Validation Discrepancy: ${err.message}`;
+        job.currentStepMessage = `Needs Review: ${err.message}`;
+      } else {
+        job.status = 'failed';
+        job.error = err?.message || 'Unknown evaluation failure';
+        job.currentStepMessage = `Failed: ${job.error}`;
+      }
+
       job.updatedAt = Date.now();
       this.persistJob(job);
       this.emit('job:failed', job);
     } finally {
       this.activeWorkers--;
-      // Process next in queue
       setImmediate(() => this.processNext());
     }
+  }
+
+  /**
+   * Prune expired jobs older than retention period
+   */
+  public pruneExpiredJobs(retentionDays = 30): number {
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    let pruned = 0;
+    for (const [id, job] of this.jobs.entries()) {
+      if (['completed', 'failed'].includes(job.status) && job.createdAt < cutoff) {
+        this.deleteJob(id);
+        pruned++;
+      }
+    }
+    return pruned;
   }
 
   public getQueueMetrics() {
     const jobs = Array.from(this.jobs.values());
     const completed = jobs.filter((j) => j.status === 'completed');
     const failed = jobs.filter((j) => j.status === 'failed');
+    const needsReview = jobs.filter((j) => j.status === 'needs_review');
     const queued = jobs.filter((j) => j.status === 'queued');
-    const running = jobs.filter((j) => ['preprocessing', 'grading', 'validating', 'assembling_report'].includes(j.status));
+    const running = jobs.filter((j) =>
+      ['preprocessing', 'grading', 'validating', 'assembling_report'].includes(j.status)
+    );
 
     const totalCost = completed.reduce((acc, j) => acc + (j.metrics.estimatedCostUsd || 0), 0);
     const totalLatency = completed.reduce((acc, j) => acc + (j.metrics.totalLatencyMs || 0), 0);
@@ -211,11 +382,13 @@ export class EvaluationQueue extends EventEmitter {
     return {
       activeWorkers: this.activeWorkers,
       maxWorkers: config.maxConcurrentEvaluations,
+      maxQueueCapacity: MAX_QUEUE_CAPACITY,
       totalJobs: jobs.length,
       queued: queued.length,
       running: running.length,
       completed: completed.length,
       failed: failed.length,
+      needsReview: needsReview.length,
       avgLatencyMs,
       totalEstimatedCostUsd: parseFloat(totalCost.toFixed(4)),
     };

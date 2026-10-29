@@ -1,19 +1,30 @@
 /**
- * Evaluation Orchestration and Result Validation Engine for NextGen Eval
+ * Evaluation Orchestration and Strict Academic Validation Engine for NextGen Eval
  *
  * Implements Stage D (Gemini Grading), Stage E (Scheduling), and Stage F (Validation and Result Assembly):
  * - Strict schema validation
- * - Verification of marks <= maxMarks
- * - Mathematical sum consistency (totalScore === sum(q.marks), maxScore === sum(q.maxMarks))
- * - Audit contradiction rules
- * - Cost and token recording
+ * - Rejection of unknown or duplicate question IDs
+ * - Rejection of NaN, infinite, negative marks, and marks > maxMarks (NEVER silent clamping!)
+ * - Rejection of invalid maxMarks (NEVER silent defaulting to 1!)
+ * - Mathematical sum consistency verification (totalScore === sum(q.marks), maxScore === sum(q.maxMarks))
+ * - Unambiguous transition to 'needs_review' on discrepancies
+ * - Caching only successfully validated results
  */
 
 import { callGeminiWithFallback } from './geminiClient';
 import { evaluationCache } from './cache';
 import { documentProcessor } from './documentProcessor';
-import { EvaluationJob, EvaluationMode, EvaluationReport, JobMetrics } from './types';
+import { EvaluationJob, EvaluationMode, EvaluationReport, QuestionFeedback } from './types';
 import { config } from './config';
+import { ACTIVE_PRICING_VERSION } from './pricing';
+
+export class ValidationError extends Error {
+  public code = 'ACADEMIC_VALIDATION_ERROR';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
 
 export class EvaluationEngine {
   /**
@@ -29,6 +40,13 @@ export class EvaluationEngine {
 
     job.metrics.startTime = Date.now();
 
+    const activeCanonicalKey = job.canonicalAnswerKey || payload.canonicalAnswerKey;
+    if (activeCanonicalKey && activeCanonicalKey.status !== 'approved') {
+      throw new ValidationError(
+        `Cannot evaluate student script with unapproved answer key. Current status: '${activeCanonicalKey.status}'. The instructor must review and approve the answer key first.`
+      );
+    }
+
     // Stage B: Document Preparation & Fingerprinting
     job.status = 'preprocessing';
     job.progressPercent = 15;
@@ -40,15 +58,23 @@ export class EvaluationEngine {
       sourceDoc: payload.sourceDoc,
       questionPaper: payload.questionPaper,
       answerKey: payload.answerKey,
+      canonicalAnswerKey: activeCanonicalKey,
       facultyNotes: payload.facultyNotes,
       mode,
       model: config.primaryModel,
-    });
+      institutionId: job.institutionId,
+    } as any);
 
     job.metrics.preprocessingLatencyMs = Date.now() - prepStart;
 
-    // Check Cache
-    const cached = evaluationCache.get(cacheKey);
+    // Check Cache with tenant authorization
+    const cached = evaluationCache.get(cacheKey, {
+      userId: job.createdBy || 'anonymous',
+      role: 'instructor',
+      institutionId: job.institutionId || 'inst_aarshiv_01',
+      name: 'System',
+    });
+
     if (cached) {
       console.log(`[EvaluationEngine][${correlationId}] Cache HIT for fingerprint ${cacheKey.substring(0, 12)}...`);
       job.status = 'assembling_report';
@@ -60,7 +86,12 @@ export class EvaluationEngine {
       job.metrics.modelUsed = cached.modelUsed;
       job.metrics.inputTokens = cached.inputTokens;
       job.metrics.outputTokens = cached.outputTokens;
+      job.metrics.cachedInputTokens = 0;
       job.metrics.estimatedCostUsd = 0; // Saved!
+      job.metrics.estimatedCostInr = 0;
+      job.metrics.pricingVersion = ACTIVE_PRICING_VERSION;
+      job.metrics.usageCompleteness = 'COMPLETE';
+      job.metrics.usageSource = 'ACTUAL_API';
       job.metrics.geminiLatencyMs = 0;
       job.metrics.validationLatencyMs = 2;
       job.metrics.totalLatencyMs = Date.now() - job.metrics.startTime;
@@ -70,11 +101,14 @@ export class EvaluationEngine {
         ...cached.report,
         id: job.id,
         timestamp: Date.now(),
+        answerKeyId: job.answerKeyId || activeCanonicalKey?.id,
+        answerKeyVersion: job.answerKeyVersion || activeCanonicalKey?.version,
+        answerKeySourceMode: job.answerKeySourceMode || activeCanonicalKey?.sourceMode,
       };
 
       job.status = 'completed';
       job.progressPercent = 100;
-      job.currentStepMessage = 'Evaluation complete';
+      job.currentStepMessage = 'Evaluation complete (from cache)';
       onProgress?.(100, job.currentStepMessage);
 
       return reportWithId;
@@ -92,6 +126,7 @@ export class EvaluationEngine {
       sourceDoc: payload.sourceDoc,
       questionPaper: payload.questionPaper,
       answerKey: payload.answerKey,
+      canonicalAnswerKey: activeCanonicalKey,
       facultyNotes: payload.facultyNotes,
       mode,
       studentName: job.studentName,
@@ -106,26 +141,47 @@ export class EvaluationEngine {
     const geminiResult = await callGeminiWithFallback(
       prepared.contentsParts,
       prepared.systemInstruction,
-      correlationId
+      correlationId,
+      {
+        jobId: job.id,
+        institutionId: job.institutionId,
+        pipelineStage: 'grading',
+      }
     );
     job.metrics.geminiLatencyMs = Date.now() - geminiStart;
     job.metrics.inputTokens = geminiResult.inputTokens;
     job.metrics.outputTokens = geminiResult.outputTokens;
+    job.metrics.cachedInputTokens = geminiResult.cachedInputTokens;
     job.metrics.estimatedCostUsd = geminiResult.estimatedCostUsd;
+    job.metrics.estimatedCostInr = geminiResult.estimatedCostInr;
+    job.metrics.pricingVersion = geminiResult.pricingVersion;
+    job.metrics.usageCompleteness = geminiResult.usageCompleteness;
+    job.metrics.usageSource = geminiResult.usageSource;
+    job.metrics.usageSummary = geminiResult.usageSummary;
     job.metrics.modelUsed = geminiResult.modelUsed;
     job.metrics.retriesCount = geminiResult.retries;
+    job.metrics.fallbackCallsCount = geminiResult.fallbackCallsCount;
 
-    // Stage F: Validation and Result Assembly
+    // Stage F: Strict Academic Validation
     job.status = 'validating';
     job.progressPercent = 80;
     job.currentStepMessage = 'Validating question marks, score consistency, and rubrics...';
     onProgress?.(80, job.currentStepMessage);
 
     const valStart = Date.now();
-    const validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName);
+    let validatedReport: EvaluationReport;
+    try {
+      validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName);
+    } catch (valErr: any) {
+      job.status = 'needs_review';
+      job.draftReport = geminiResult.report; // Preserve unvalidated draft for authorized instructor/admin review
+      job.error = `Academic Validation Discrepancy: ${valErr?.message || valErr}`;
+      job.currentStepMessage = `Needs Review: ${job.error}`;
+      throw valErr;
+    }
     job.metrics.validationLatencyMs = Date.now() - valStart;
 
-    // Stage G: Assemble and Cache
+    // Stage G: Assemble and Cache Only Validated Results
     job.status = 'assembling_report';
     job.progressPercent = 95;
     job.currentStepMessage = 'Finalizing verified evaluation report...';
@@ -133,6 +189,9 @@ export class EvaluationEngine {
 
     validatedReport.id = job.id;
     validatedReport.timestamp = Date.now();
+    validatedReport.answerKeyId = job.answerKeyId || activeCanonicalKey?.id;
+    validatedReport.answerKeyVersion = job.answerKeyVersion || activeCanonicalKey?.version;
+    validatedReport.answerKeySourceMode = job.answerKeySourceMode || activeCanonicalKey?.sourceMode;
 
     // Cache verified report
     evaluationCache.set({
@@ -143,6 +202,8 @@ export class EvaluationEngine {
       inputTokens: geminiResult.inputTokens,
       outputTokens: geminiResult.outputTokens,
       estimatedCostSaved: geminiResult.estimatedCostUsd,
+      institutionId: job.institutionId,
+      createdBy: job.createdBy,
     });
 
     job.metrics.totalLatencyMs = Date.now() - job.metrics.startTime;
@@ -156,7 +217,12 @@ export class EvaluationEngine {
   }
 
   /**
-   * Validates score consistency, bounds, questions, and formatting
+   * Strictly validates question score bounds, duplicate IDs, NaN/infinite values,
+   * and mathematical aggregate sum consistency.
+   *
+   * NEVER clamps scores to make outputs appear valid.
+   * NEVER replaces missing or invalid maxMarks with 1.
+   * Throws ValidationError on any inconsistency.
    */
   public validateAndNormalizeReport(
     report: any,
@@ -164,112 +230,143 @@ export class EvaluationEngine {
     fallbackStudentName: string
   ): EvaluationReport {
     if (!report || typeof report !== 'object') {
-      throw new Error('Evaluation validation failed: Malformed response object.');
+      throw new ValidationError('Malformed response: Expected a structured JSON object.');
     }
 
-    const studentName = (report.studentName || fallbackStudentName || 'Student').trim();
-    const testTitle = (report.testTitle || 'Academic Assessment').trim();
-    const testTopics = (report.testTopics || 'General Assessment Syllabus').trim();
-    const testDate = (report.testDate || new Date().toISOString().split('T')[0]).trim();
+    const studentName = String(report.studentName || fallbackStudentName || 'Student').trim();
+    const testTitle = String(report.testTitle || 'Academic Assessment').trim();
+    const testTopics = String(report.testTopics || 'General Assessment Syllabus').trim();
+    const testDate = String(report.testDate || new Date().toISOString().split('T')[0]).trim();
 
     if (!Array.isArray(report.questions) || report.questions.length === 0) {
-      throw new Error('Evaluation validation failed: No evaluated questions found in report.');
+      throw new ValidationError('Validation failed: No evaluated questions array found in report.');
     }
 
+    const seenQNos = new Set<string>();
     let calculatedTotalScore = 0;
     let calculatedMaxScore = 0;
 
-    const validatedQuestions = report.questions.map((q: any, idx: number) => {
-      const qNo = String(q.qNo || (idx + 1)).trim();
-      let maxMarks = Number(q.maxMarks);
-      if (isNaN(maxMarks) || maxMarks <= 0) {
-        maxMarks = 1; // Default minimum 1
+    const validatedQuestions: QuestionFeedback[] = [];
+
+    for (let idx = 0; idx < report.questions.length; idx++) {
+      const q = report.questions[idx];
+      if (!q || typeof q !== 'object') {
+        throw new ValidationError(`Question at index ${idx} is malformed.`);
       }
 
-      let marks = Number(q.marks);
-      if (isNaN(marks) || marks < 0) {
-        marks = 0;
+      // 1. Question Identifier & Uniqueness Check
+      const qNo = String(q.qNo ?? '').trim();
+      if (!qNo) {
+        throw new ValidationError(`Question at index ${idx} has a missing or empty question number (qNo).`);
       }
-      // Strictly prevent student marks from exceeding question maximum
+      if (seenQNos.has(qNo)) {
+        throw new ValidationError(`Duplicate question ID detected: Question "${qNo}" appears multiple times in report.`);
+      }
+      seenQNos.add(qNo);
+
+      // 2. Validate maxMarks: must be finite, strictly positive number (> 0)
+      const rawMax = q.maxMarks;
+      if (typeof rawMax !== 'number' || !Number.isFinite(rawMax) || rawMax <= 0) {
+        throw new ValidationError(
+          `Invalid maximum marks for Question ${qNo}: Expected finite positive number > 0, received ${JSON.stringify(rawMax)}.`
+        );
+      }
+      const maxMarks = parseFloat(rawMax.toFixed(2));
+
+      // 3. Validate marks: must be finite number, >= 0
+      const rawMarks = q.marks;
+      if (typeof rawMarks !== 'number' || !Number.isFinite(rawMarks) || rawMarks < 0) {
+        throw new ValidationError(
+          `Invalid marks awarded for Question ${qNo}: Expected finite non-negative number >= 0, received ${JSON.stringify(rawMarks)}.`
+        );
+      }
+      const marks = parseFloat(rawMarks.toFixed(2));
+
+      // 4. Strictly enforce score bounds: marks cannot exceed maxMarks
       if (marks > maxMarks) {
-        console.warn(`[EvaluationEngine] Question ${qNo} marks (${marks}) exceeded maxMarks (${maxMarks}). Adjusting to maxMarks.`);
-        marks = maxMarks;
+        throw new ValidationError(
+          `Score bound violation on Question ${qNo}: Awarded marks (${marks}) exceed maximum permissible marks (${maxMarks}).`
+        );
       }
 
-      // Ensure feedbackPoints is non-empty
-      let feedbackPoints: string[] = [];
-      if (Array.isArray(q.feedbackPoints) && q.feedbackPoints.length > 0) {
-        feedbackPoints = q.feedbackPoints.map((p: any) => String(p).trim()).filter(Boolean);
+      // 5. Feedback Points validation
+      if (!Array.isArray(q.feedbackPoints) || q.feedbackPoints.length === 0) {
+        throw new ValidationError(`Question ${qNo} is missing required feedbackPoints.`);
       }
+      const feedbackPoints = q.feedbackPoints
+        .map((p: any) => String(p).trim())
+        .filter((p: string) => p.length > 0);
+
       if (feedbackPoints.length === 0) {
-        feedbackPoints = marks === maxMarks ? ['Correct and complete answer.'] : ['Answer does not meet required points.'];
+        throw new ValidationError(`Question ${qNo} has empty feedbackPoints.`);
       }
 
-      // Flagged comment rules
+      // 6. Mode handling for flagged notes
       let isFlagged = Boolean(q.isFlagged);
-      let flaggedComment = String(q.flaggedComment || '').trim();
+      let flaggedComment = q.flaggedComment ? String(q.flaggedComment).trim() : undefined;
 
       if (mode === 'without-manual') {
         isFlagged = false;
-        flaggedComment = '';
+        flaggedComment = undefined;
       }
 
       calculatedTotalScore += marks;
       calculatedMaxScore += maxMarks;
 
-      return {
+      validatedQuestions.push({
         qNo,
-        marks: parseFloat(marks.toFixed(2)),
-        maxMarks: parseFloat(maxMarks.toFixed(2)),
+        marks,
+        maxMarks,
         isCorrect: marks >= maxMarks,
         feedbackPoints,
         isFlagged,
         flaggedComment: isFlagged ? flaggedComment : undefined,
-      };
-    });
+      });
+    }
 
-    // Enforce totalScore equals exact mathematical sum of question marks
-    const totalScore = parseFloat(calculatedTotalScore.toFixed(2));
-    const maxScore = parseFloat(calculatedMaxScore.toFixed(2));
+    // 7. Aggregate Totals Verification
+    const roundedTotalScore = parseFloat(calculatedTotalScore.toFixed(2));
+    const roundedMaxScore = parseFloat(calculatedMaxScore.toFixed(2));
 
-    // Ensure generalFeedback sections exist
-    const defaultGeneralFeedback = {
-      overallPerformance: ['Completed assessment evaluation.'],
-      mcqs: ['All objective questions evaluated.'],
-      contentAccuracy: ['Subject concepts evaluated against official answer key.'],
-      completenessOfAnswers: ['Answer depth and coverage reviewed.'],
-      presentationDiagrams: ['Presentation, structure, and diagrams reviewed.'],
-      investigations: ['Methodology and working steps reviewed.'],
-      attemptingQuestions: ['Question attempt coverage reviewed.'],
-      actionPoints: ['Continue practicing question answering techniques.'],
+    // Verify model-reported totalScore against exact calculated sum
+    if (typeof report.totalScore === 'number' && Number.isFinite(report.totalScore)) {
+      const diff = Math.abs(report.totalScore - roundedTotalScore);
+      if (diff > 0.05) {
+        throw new ValidationError(
+          `Aggregate score discrepancy: Model reported totalScore=${report.totalScore}, but the exact sum of question marks is ${roundedTotalScore}.`
+        );
+      }
+    }
+
+    // Verify model-reported maxScore against exact calculated max sum
+    if (typeof report.maxScore === 'number' && Number.isFinite(report.maxScore)) {
+      const diff = Math.abs(report.maxScore - roundedMaxScore);
+      if (diff > 0.05) {
+        throw new ValidationError(
+          `Aggregate maximum score discrepancy: Model reported maxScore=${report.maxScore}, but the exact sum of question maxMarks is ${roundedMaxScore}.`
+        );
+      }
+    }
+
+    // 8. General Feedback Section validation
+    const gf = report.generalFeedback || {};
+    const extractPoints = (arr: any, fallback: string[]): string[] => {
+      if (Array.isArray(arr) && arr.length > 0) {
+        const cleaned = arr.map((x: any) => String(x).trim()).filter(Boolean);
+        if (cleaned.length > 0) return cleaned;
+      }
+      return fallback;
     };
 
-    const gf = report.generalFeedback || {};
     const generalFeedback = {
-      overallPerformance: Array.isArray(gf.overallPerformance) && gf.overallPerformance.length > 0
-        ? gf.overallPerformance.map(String)
-        : defaultGeneralFeedback.overallPerformance,
-      mcqs: Array.isArray(gf.mcqs) && gf.mcqs.length > 0
-        ? gf.mcqs.map(String)
-        : defaultGeneralFeedback.mcqs,
-      contentAccuracy: Array.isArray(gf.contentAccuracy) && gf.contentAccuracy.length > 0
-        ? gf.contentAccuracy.map(String)
-        : defaultGeneralFeedback.contentAccuracy,
-      completenessOfAnswers: Array.isArray(gf.completenessOfAnswers) && gf.completenessOfAnswers.length > 0
-        ? gf.completenessOfAnswers.map(String)
-        : defaultGeneralFeedback.completenessOfAnswers,
-      presentationDiagrams: Array.isArray(gf.presentationDiagrams) && gf.presentationDiagrams.length > 0
-        ? gf.presentationDiagrams.map(String)
-        : defaultGeneralFeedback.presentationDiagrams,
-      investigations: Array.isArray(gf.investigations) && gf.investigations.length > 0
-        ? gf.investigations.map(String)
-        : defaultGeneralFeedback.investigations,
-      attemptingQuestions: Array.isArray(gf.attemptingQuestions) && gf.attemptingQuestions.length > 0
-        ? gf.attemptingQuestions.map(String)
-        : defaultGeneralFeedback.attemptingQuestions,
-      actionPoints: Array.isArray(gf.actionPoints) && gf.actionPoints.length > 0
-        ? gf.actionPoints.map(String)
-        : defaultGeneralFeedback.actionPoints,
+      overallPerformance: extractPoints(gf.overallPerformance, ['Evaluation assessment successfully verified.']),
+      mcqs: extractPoints(gf.mcqs, ['Objective questions evaluated.']),
+      contentAccuracy: extractPoints(gf.contentAccuracy, ['Subject concepts evaluated against official key.']),
+      completenessOfAnswers: extractPoints(gf.completenessOfAnswers, ['Answer depth and coverage reviewed.']),
+      presentationDiagrams: extractPoints(gf.presentationDiagrams, ['Presentation and structure reviewed.']),
+      investigations: extractPoints(gf.investigations, ['Methodology steps reviewed.']),
+      attemptingQuestions: extractPoints(gf.attemptingQuestions, ['Question attempt coverage reviewed.']),
+      actionPoints: extractPoints(gf.actionPoints, ['Review key concepts for continuous academic improvement.']),
     };
 
     return {
@@ -277,8 +374,8 @@ export class EvaluationEngine {
       testTitle,
       testTopics,
       testDate,
-      totalScore,
-      maxScore,
+      totalScore: roundedTotalScore,
+      maxScore: roundedMaxScore,
       questions: validatedQuestions,
       generalFeedback,
       evaluatedByModel: report.evaluatedByModel,

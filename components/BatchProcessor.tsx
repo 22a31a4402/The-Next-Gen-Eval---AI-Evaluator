@@ -42,9 +42,9 @@ import {
   GripVertical
 } from 'lucide-react';
 
-const pdfjs: any = (pdfjsLib as any).GlobalWorkerOptions 
-  ? pdfjsLib 
-  : (pdfjsLib as any).default || pdfjsLib;
+const pdfjs: any = (pdfjsLib as any)?.getDocument
+  ? pdfjsLib
+  : (pdfjsLib as any)?.default || pdfjsLib;
 
 if (pdfjs && pdfjs.GlobalWorkerOptions) {
   pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -533,25 +533,27 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, onAddHistoryIte
       
       // 2. Extract shared resources: Question Paper & Answer Key
       setCurrentActionLog(`Reading Question Paper and Answer Key...`);
-      let sharedContextText = '';
+      let qpPayload: FileData | null = null;
+      let akPayload: FileData | null = null;
       
       if (activeQP) {
         const qpText = await processFileToText(activeQP);
-        sharedContextText += `--- OFFICIAL QUESTION PAPER ---\n${qpText}\n\n`;
+        qpPayload = {
+          name: activeQP.name,
+          text: qpText,
+          mimeType: activeQP.type || 'application/pdf',
+          isDocx: false,
+        };
       }
       if (activeAK) {
         const akText = await processFileToText(activeAK);
-        sharedContextText += `--- OFFICIAL OFFICIAL ANSWER KEY (THE ABSOLUTE TRUTH) ---\n${akText}\n\n`;
+        akPayload = {
+          name: activeAK.name,
+          text: akText,
+          mimeType: activeAK.type || 'application/pdf',
+          isDocx: false,
+        };
       }
-
-      // 3. Synthesize structured prompt containing Question Paper, Answer Key, and Student's Answer Sheet
-      const finalDocText = `
-        ${sharedContextText}
-        
-        --- STUDENT WRITTEN ANSWER SCRIPT ---
-        STUDENT NAME: ${item.studentName}
-        ${studentText}
-      `;
 
       // Convert student's actual file to base64 for multimodal analysis (prioritize cached buffer to eliminate stale file handles)
       const studentBase64 = item.cachedBase64 || await safeFileToBase64(item.file);
@@ -560,7 +562,7 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, onAddHistoryIte
       }
 
       const sourceDocPayload: FileData = {
-        text: finalDocText,
+        text: studentText,
         base64: studentBase64,
         mimeType: item.file.type || 'application/pdf',
         name: item.file.name,
@@ -577,7 +579,9 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, onAddHistoryIte
         evalMode,
         (percent, msg) => {
           setCurrentActionLog(`[${percent}%] ${item.studentName}: ${msg}`);
-        }
+        },
+        qpPayload,
+        akPayload
       );
       
       const enrichedResult: EvaluationReport = {

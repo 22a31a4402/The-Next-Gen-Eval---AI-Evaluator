@@ -1,0 +1,89 @@
+{
+  "id": "f6051259-0901-4fb6-acf0-b23e25342a03",
+  "correlationId": "eval_1793259033501_6d0ee92a",
+  "status": "completed",
+  "progressPercent": 100,
+  "currentStepMessage": "Evaluation complete and verified",
+  "mode": "with-manual",
+  "studentName": "Phase 2 Test Student",
+  "testTitle": "Upper Limb Anatomy & Embryology",
+  "institutionId": "inst_aarshiv_01",
+  "createdBy": "prof_sharma",
+  "createdAt": 1793259033501,
+  "updatedAt": 1793260125815,
+  "metrics": {
+    "correlationId": "eval_1793259033501_6d0ee92a",
+    "startTime": 1793260125809,
+    "cacheHit": true,
+    "retriesCount": 0,
+    "preprocessingLatencyMs": 0,
+    "modelUsed": "gemini-3.8-flash",
+    "inputTokens": 15000,
+    "outputTokens": 3500,
+    "cachedInputTokens": 0,
+    "estimatedCostUsd": 0,
+    "estimatedCostInr": 0,
+    "pricingVersion": "pricing_v2.1_2026_05",
+    "usageCompleteness": "COMPLETE",
+    "usageSource": "ACTUAL_API",
+    "geminiLatencyMs": 0,
+    "validationLatencyMs": 2,
+    "totalLatencyMs": 5,
+    "endTime": 1793260125814
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "phase2_script_1793259033501.pdf",
+      "text": "Anatomy answer script content 1793259033501"
+    }
+  },
+  "report": {
+    "studentName": "Mock Student",
+    "testTitle": "Resilience Assessment",
+    "testTopics": "Pathology",
+    "testDate": "2026-05-15",
+    "totalScore": 10,
+    "maxScore": 10,
+    "questions": [
+      {
+        "qNo": "1",
+        "marks": 10,
+        "maxMarks": 10,
+        "isCorrect": true,
+        "feedbackPoints": [
+          "Correct biological pathway described."
+        ],
+        "isFlagged": false
+      }
+    ],
+    "generalFeedback": {
+      "overallPerformance": [
+        "Passed."
+      ],
+      "mcqs": [
+        "Objective questions evaluated."
+      ],
+      "contentAccuracy": [
+        "Accurate."
+      ],
+      "completenessOfAnswers": [
+        "Complete."
+      ],
+      "presentationDiagrams": [
+        "Good diagrams."
+      ],
+      "investigations": [
+        "Methodology steps reviewed."
+      ],
+      "attemptingQuestions": [
+        "Attempted."
+      ],
+      "actionPoints": [
+        "Continue revision."
+      ]
+    },
+    "evaluatedByModel": "gemini-3.8-flash",
+    "id": "f6051259-0901-4fb6-acf0-b23e25342a03",
+    "timestamp": 1793260125814
+  }
+}

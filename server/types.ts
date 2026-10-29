@@ -10,9 +10,62 @@ export type JobStatus =
   | 'assembling_report'
   | 'completed'
   | 'failed'
-  | 'needs_review';
+  | 'needs_review'
+  | 'cancelled';
 
 export type EvaluationMode = 'with-manual' | 'without-manual';
+
+export type AnswerKeySourceMode = 'ai_generated' | 'uploaded';
+export type AnswerKeyStatus = 'draft' | 'needs_review' | 'approved';
+
+export interface CanonicalQuestionKey {
+  questionId: string;
+  subquestionId?: string;
+  questionText?: string;
+  maxMarks: number;
+  referenceAnswer: string;
+  expectedConcepts: string[];
+  acceptableAlternatives: string[];
+  markingCriteria: string[];
+  diagramReferences?: string[];
+  confidence?: number;
+  flaggedIssue?: string;
+}
+
+export interface CanonicalAnswerKey {
+  id: string;
+  examId: string;
+  title: string;
+  subject?: string;
+  grade?: string;
+  sourceMode: AnswerKeySourceMode;
+  version: number;
+  status: AnswerKeyStatus;
+  totalMaxMarks: number;
+  questions: CanonicalQuestionKey[];
+  warnings?: string[];
+  metadata: {
+    institutionId: string;
+    createdBy: string;
+    createdAt: number;
+    updatedAt: number;
+    approvedAt?: number;
+    approvedBy?: string;
+    sourceDocName?: string;
+  };
+  sourceQuestionPaperDoc?: {
+    name: string;
+    text?: string;
+    base64?: string;
+    mimeType?: string;
+  };
+  sourceAnswerKeyDoc?: {
+    name: string;
+    text?: string;
+    base64?: string;
+    mimeType?: string;
+  };
+}
 
 export interface QuestionFeedback {
   qNo: string;
@@ -47,6 +100,9 @@ export interface EvaluationReport {
   generalFeedback: GeneralFeedbackSection;
   timestamp?: number;
   evaluatedByModel?: string;
+  answerKeyId?: string;
+  answerKeyVersion?: number;
+  answerKeySourceMode?: AnswerKeySourceMode;
 }
 
 export interface JobMetrics {
@@ -57,11 +113,18 @@ export interface JobMetrics {
   preprocessingLatencyMs?: number;
   geminiLatencyMs?: number;
   validationLatencyMs?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  estimatedCostUsd?: number;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cachedInputTokens?: number | null;
+  estimatedCostUsd?: number | null;
+  estimatedCostInr?: number | null;
+  pricingVersion?: string;
+  usageCompleteness?: 'COMPLETE' | 'PARTIAL' | 'UNAVAILABLE';
+  usageSource?: string;
+  usageSummary?: any;
   cacheHit: boolean;
   retriesCount: number;
+  fallbackCallsCount?: number;
   modelUsed?: string;
 }
 
@@ -74,11 +137,18 @@ export interface EvaluationJob {
   mode: EvaluationMode;
   studentName: string;
   testTitle?: string;
+  institutionId?: string;
+  createdBy?: string;
   createdAt: number;
   updatedAt: number;
   report?: EvaluationReport;
+  draftReport?: any;
   error?: string;
   metrics: JobMetrics;
+  answerKeyId?: string;
+  answerKeyVersion?: number;
+  answerKeySourceMode?: AnswerKeySourceMode;
+  canonicalAnswerKey?: CanonicalAnswerKey;
   inputPayload: {
     sourceDoc: {
       name: string;
@@ -98,6 +168,8 @@ export interface EvaluationJob {
       base64?: string;
       mimeType?: string;
     };
+    answerKeyId?: string;
+    canonicalAnswerKey?: CanonicalAnswerKey;
     facultyNotes?: {
       name: string;
       text?: string;
