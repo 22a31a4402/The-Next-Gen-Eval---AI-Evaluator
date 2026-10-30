@@ -128,21 +128,47 @@ export interface JobMetrics {
   modelUsed?: string;
 }
 
+export interface StudentExtractedAnswer {
+  questionId: string;
+  subquestionId?: string;
+  studentAnswerText: string;
+  diagramDescription?: string;
+  formulas?: string[];
+  pageReferences?: number[];
+  isAttempted: boolean;
+  confidence: number;
+  flaggedUncertain?: boolean;
+  flaggedIssue?: string;
+  visualEvidenceBase64?: string;
+  visualEvidenceMimeType?: string;
+}
+
+export interface StudentExtractedScript {
+  studentName: string;
+  examTitle?: string;
+  answers: StudentExtractedAnswer[];
+  unmappedContent?: string[];
+  warnings?: string[];
+  visualEvidenceRetained: boolean;
+  extractedAt: number;
+}
+
 export interface EvaluationJob {
   id: string;
   correlationId: string;
-  status: JobStatus;
-  progressPercent: number; // 0 - 100
-  currentStepMessage: string;
-  mode: EvaluationMode;
   studentName: string;
   testTitle?: string;
+  status: JobStatus;
+  progressPercent: number;
+  currentStepMessage: string;
+  mode: EvaluationMode;
   institutionId?: string;
   createdBy?: string;
   createdAt: number;
   updatedAt: number;
   report?: EvaluationReport;
   draftReport?: any;
+  extractedScript?: StudentExtractedScript;
   error?: string;
   metrics: JobMetrics;
   answerKeyId?: string;

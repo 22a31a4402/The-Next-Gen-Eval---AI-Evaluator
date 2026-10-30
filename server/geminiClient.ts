@@ -137,6 +137,8 @@ export interface GeminiCallOptions {
   pricingVersion?: string;
   customUsdToInrRate?: number;
   dataSourceOverride?: UsageSourceType;
+  model?: string;
+  candidateModels?: string[];
 }
 
 export interface GeminiCallResult {
@@ -194,7 +196,7 @@ export const callGeminiWithFallback = async (
   }
 
   const ai = !mockGenerateFn ? getGeminiClient() : null;
-  const candidateModels = [config.primaryModel, ...config.fallbackModels];
+  const candidateModels = options?.candidateModels || (options?.model ? [options.model, ...config.fallbackModels.filter((m) => m !== options.model)] : [config.primaryModel, ...config.fallbackModels]);
   const jobId = options?.jobId || `job_${correlationId}`;
   const institutionId = options?.institutionId || 'inst_aarshiv_01';
   const pipelineStage = options?.pipelineStage || 'grading';

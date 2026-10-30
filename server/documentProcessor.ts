@@ -33,7 +33,9 @@ export class DocumentProcessor {
 
     // 1. Prepare Question Paper
     let qpSection = '';
-    if (payload.questionPaper) {
+    // If canonical answer key is present, question text & max marks are already structured in it.
+    // Avoid re-transmitting heavy visual question papers per student script.
+    if (payload.questionPaper && !payload.canonicalAnswerKey) {
       if (payload.questionPaper.text && payload.questionPaper.text.trim().length > 30) {
         // High density text available: use pure text to save tokens & latency
         qpSection += `--- OFFICIAL QUESTION PAPER ---\n${payload.questionPaper.text.trim()}\n\n`;
@@ -48,6 +50,9 @@ export class DocumentProcessor {
         });
         contentsParts.push({ text: `DOCUMENT_END: OFFICIAL QUESTION PAPER` });
       }
+    } else if (payload.questionPaper && payload.canonicalAnswerKey && payload.questionPaper.text) {
+      // Include lightweight text overview if available
+      qpSection += `--- REFERENCE QUESTION PAPER (Summary) ---\n${payload.questionPaper.text.slice(0, 1500).trim()}\n\n`;
     }
 
     // 2. Prepare Answer Key (Canonical Structured or Raw Document)
@@ -58,6 +63,7 @@ export class DocumentProcessor {
       akSection += `EXAM TITLE: ${ak.title}\n`;
       akSection += `TOTAL MAX MARKS: ${ak.totalMaxMarks}\n\n`;
       akSection += `APPROVED QUESTIONS & MARKING SCHEME:\n`;
+      let hasDiagramRef = false;
       for (const q of ak.questions) {
         akSection += `[Question ${q.questionId}] (Max Marks: ${q.maxMarks})\n`;
         if (q.questionText) akSection += `Question: ${q.questionText}\n`;
@@ -71,18 +77,23 @@ export class DocumentProcessor {
         if (q.markingCriteria && q.markingCriteria.length > 0) {
           akSection += `Marking Criteria (Partial Credit):\n${q.markingCriteria.map((m) => `  - ${m}`).join('\n')}\n`;
         }
+        if (q.diagramReferences && q.diagramReferences.length > 0) {
+          hasDiagramRef = true;
+          akSection += `Diagram References:\n${q.diagramReferences.map((d) => `  - ${d}`).join('\n')}\n`;
+        }
         akSection += '\n';
       }
 
-      if (ak.sourceAnswerKeyDoc?.base64 && ak.sourceAnswerKeyDoc?.mimeType) {
-        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual Reference)` });
+      // Only attach visual answer key document if a question explicitly needs visual diagram verification
+      if (hasDiagramRef && ak.sourceAnswerKeyDoc?.base64 && ak.sourceAnswerKeyDoc?.mimeType) {
+        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual Reference for Diagrams)` });
         contentsParts.push({
           inlineData: {
             data: ak.sourceAnswerKeyDoc.base64,
             mimeType: ak.sourceAnswerKeyDoc.mimeType,
           },
         });
-        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY (Visual Reference)` });
+        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY (Visual Reference for Diagrams)` });
       }
     } else if (payload.answerKey) {
       if (payload.answerKey.text && payload.answerKey.text.trim().length > 30) {

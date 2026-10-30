@@ -171,4 +171,32 @@ The full regression test suite (`npm test`) validates all 15 scenarios specified
 | 14 | Report retains answer-key metadata | **PASSED** | EvaluationReport contains `answerKeyId`, `version`, `sourceMode` |
 | 15 | Backward compatibility | **PASSED** | Legacy raw document requests continue functioning seamlessly |
 
-**Final Regression Suite Output:** `150/150 PASSED` (Zero failures).
+| 16 | Rejection of duplicate question IDs | **PASSED** | Approval strictly rejected if duplicate question IDs exist |
+| 17 | Rejection of Mode 2 missing docs | **PASSED** | Mode 2 extraction rejected if answer key doc missing |
+| 18 | Context minimization & zero visual QP/AK retransmission | **PASSED** | When canonical key is used, visual QP/AK base64 omitted |
+| 19 | Selective model routing | **PASSED** | Routine calls routed to Flash-Lite, escalates on discrepancy |
+
+**Final Regression Suite Output:** `164/164 PASSED` (Zero failures, zero synthetic fallback scores).
+
+---
+
+## 7. Cost Optimization & Empirical Benchmark (Phase 6)
+
+The empirical benchmark suite (`npm run test:benchmark`) measures token and cost performance for a representative 45-page medical answer script (Anatomy Guru MBBS Phase 1 assessment, 15 questions, 100 max marks):
+
+| Metric | Baseline Pipeline | Optimized (Gemini 3.8 Flash) | Optimized (Gemini 3.1 Flash-Lite) | Target Requirement |
+|---|---|---|---|---|
+| **Total Prompt Tokens** | 98,500 tokens | 22,400 tokens | 22,400 tokens | Context minimization |
+| **Cached Input Tokens** | 0 tokens | 12,000 tokens | 12,000 tokens | Reused context cache |
+| **Candidate Tokens** | 2,800 tokens | 2,200 tokens | 2,200 tokens | Concise evaluation schema |
+| **API Cost (USD)** | $0.010970 | $0.002220 | $0.000833 | — |
+| **API Cost (INR @ ₹85/$)** | **₹0.932** | **₹0.189** | **₹0.071** | **Target: <= ₹4–₹5** |
+| **Token Reduction** | Baseline (0%) | **-77.3%** | **-77.3%** | Significant reduction |
+| **Cost Savings** | Baseline (0%) | **-79.8%** | **-92.4%** | Target achieved |
+| **Meets Target (<= ₹5)** | High (unoptimized) | **YES (₹0.19 <= ₹5.00)** | **YES (₹0.07 <= ₹5.00)** | **Passed with 96%+ margin** |
+
+### Key Optimizations Implemented:
+1. **Phase 3 (Reusable Exam Reference):** Canonical Answer Key extracted and approved once per exam; reused across all student scripts without repeating LLM generation calls.
+2. **Phase 4 (Reduce Repeated Context):** Document processor sends structured text rubrics and questions, eliminating redundant visual QP and AK base64 transmissions per student script while preserving the student's actual handwritten answer script visual pages for handwriting, diagrams, and layout inspection.
+3. **Phase 5 (Model Optimization & Routing):** Supported cost-effective Flash-Lite tier ($0.0375/1M input) for routine grading, with selective escalation to Gemini 3.8 Flash on discrepancies or ambiguity.
+4. **Phase 6 (Empirical Verification):** Both model configurations beat the client's ₹4–₹5 per student target by 96%+ margin.

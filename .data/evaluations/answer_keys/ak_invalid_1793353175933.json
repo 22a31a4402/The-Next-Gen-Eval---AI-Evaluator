@@ -1,0 +1,26 @@
+{
+  "id": "ak_invalid_1793353175933",
+  "examId": "exam_1793353175933",
+  "title": "Invalid Marks Exam",
+  "sourceMode": "ai_generated",
+  "version": 1,
+  "status": "draft",
+  "totalMaxMarks": 0,
+  "questions": [
+    {
+      "questionId": "1",
+      "maxMarks": 0,
+      "referenceAnswer": "Some answer",
+      "expectedConcepts": [],
+      "acceptableAlternatives": [],
+      "markingCriteria": [],
+      "flaggedIssue": "Missing maximum marks in question paper"
+    }
+  ],
+  "metadata": {
+    "institutionId": "inst_aarshiv_1793353175925",
+    "createdBy": "prof_sharma_1793353175925",
+    "createdAt": 1793353175933,
+    "updatedAt": 1793353175933
+  }
+}

@@ -105,3 +105,29 @@ export interface FileData {
   name: string;
   isDocx: boolean;
 }
+
+export interface StudentExtractedAnswer {
+  questionId: string;
+  subquestionId?: string;
+  studentAnswerText: string;
+  diagramDescription?: string;
+  formulas?: string[];
+  pageReferences?: number[];
+  isAttempted: boolean;
+  confidence: number;
+  flaggedUncertain?: boolean;
+  flaggedIssue?: string;
+  visualEvidenceBase64?: string;
+  visualEvidenceMimeType?: string;
+}
+
+export interface StudentExtractedScript {
+  studentName: string;
+  examTitle?: string;
+  answers: StudentExtractedAnswer[];
+  unmappedContent?: string[];
+  warnings?: string[];
+  visualEvidenceRetained: boolean;
+  extractedAt: number;
+}
+

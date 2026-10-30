@@ -141,8 +141,26 @@ const App: React.FC = () => {
   const [loadingStep, setLoadingStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<'dashboard' | 'report' | 'history' | 'batch'>('dashboard');
-  const [evalMode, setEvalMode] = useState<EvaluationMode>('without-manual');
-  const [currentAnswerKey, setCurrentAnswerKey] = useState<CanonicalAnswerKey | null>(null);
+  const [currentAnswerKey, setCurrentAnswerKey] = useState<CanonicalAnswerKey | null>(() => {
+    try {
+      const saved = localStorage.getItem('nextgen_active_answer_key');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (currentAnswerKey) {
+        localStorage.setItem('nextgen_active_answer_key', JSON.stringify(currentAnswerKey));
+      } else {
+        localStorage.removeItem('nextgen_active_answer_key');
+      }
+    } catch (e) {
+      console.warn("Failed to update nextgen_active_answer_key in localStorage:", e);
+    }
+  }, [currentAnswerKey]);
   const [editingSingleReport, setEditingSingleReport] = useState<EvaluationReport | null>(null);
 
   // Helper handlers to edit single evaluation report
@@ -835,14 +853,83 @@ const App: React.FC = () => {
         </button>
       </div>
 
-      {/* Step 1: Prepare & Approve Exam Answer Key */}
+      {/* 5-Step Workflow Progress Tracker */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 mb-8 shadow-sm">
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 text-center">
+          Mandatory Evaluation Sequence
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+          {/* Step 1 */}
+          <div className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
+            !currentAnswerKey
+              ? 'bg-purple-50 border-purple-300 text-purple-700'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          }`}>
+            <div className="text-[10px] uppercase font-black tracking-wider opacity-70">Step 1</div>
+            <div>Prepare Key</div>
+            <div className="text-[10px] font-medium mt-0.5">{currentAnswerKey ? '✓ Prepared' : 'In Progress'}</div>
+          </div>
+
+          {/* Step 2 */}
+          <div className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
+            currentAnswerKey && currentAnswerKey.status !== 'approved'
+              ? 'bg-amber-50 border-amber-300 text-amber-800'
+              : currentAnswerKey?.status === 'approved'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-slate-50 border-slate-200 text-slate-400'
+          }`}>
+            <div className="text-[10px] uppercase font-black tracking-wider opacity-70">Step 2</div>
+            <div>Review & Edit</div>
+            <div className="text-[10px] font-medium mt-0.5">{currentAnswerKey ? 'PDF + Criteria' : 'Pending'}</div>
+          </div>
+
+          {/* Step 3 */}
+          <div className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
+            currentAnswerKey?.status === 'approved'
+              ? 'bg-emerald-100 border-emerald-300 text-emerald-900 ring-1 ring-emerald-400'
+              : currentAnswerKey
+              ? 'bg-amber-50 border-amber-200 text-amber-800'
+              : 'bg-slate-50 border-slate-200 text-slate-400'
+          }`}>
+            <div className="text-[10px] uppercase font-black tracking-wider opacity-70">Step 3</div>
+            <div>Faculty Approval</div>
+            <div className="text-[10px] font-medium mt-0.5">{currentAnswerKey?.status === 'approved' ? `✓ Approved (v${currentAnswerKey.version})` : 'Approval Req.'}</div>
+          </div>
+
+          {/* Step 4 */}
+          <div className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
+            currentAnswerKey?.status === 'approved' && !sourceDoc
+              ? 'bg-blue-50 border-blue-300 text-blue-700'
+              : sourceDoc && currentAnswerKey?.status === 'approved'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-slate-50 border-slate-200 text-slate-400'
+          }`}>
+            <div className="text-[10px] uppercase font-black tracking-wider opacity-70">Step 4</div>
+            <div>Upload Scripts</div>
+            <div className="text-[10px] font-medium mt-0.5">{sourceDoc ? '✓ Uploaded' : currentAnswerKey?.status === 'approved' ? 'Unlocked' : 'Locked'}</div>
+          </div>
+
+          {/* Step 5 */}
+          <div className={`col-span-2 sm:col-span-1 p-2.5 rounded-xl border text-xs font-bold transition-all ${
+            sourceDoc && currentAnswerKey?.status === 'approved'
+              ? 'bg-slate-900 border-slate-900 text-white'
+              : 'bg-slate-50 border-slate-200 text-slate-400'
+          }`}>
+            <div className="text-[10px] uppercase font-black tracking-wider opacity-70">Step 5</div>
+            <div>Evaluate & View</div>
+            <div className="text-[10px] font-medium mt-0.5">{sourceDoc && currentAnswerKey?.status === 'approved' ? 'Ready' : 'Pending'}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Step 1, 2, 3: Prepare, Review & Approve Exam Answer Key */}
       <div className="mb-10">
         <div className="text-center mb-4">
           <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest">
-            Step 1: Prepare & Approve Exam Answer Key
+            Steps 1–3: Prepare, Review & Approve Exam Answer Key
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Choose how to prepare the authoritative answer key. Once approved, it will be used to evaluate student submissions.
+            Choose how to prepare the authoritative answer key (Mode 1: Generate AI or Mode 2: Upload Key). Once approved by faculty, it will be reused across student submissions.
           </p>
         </div>
 
@@ -857,26 +944,42 @@ const App: React.FC = () => {
         />
       </div>
 
-      {/* Step 2: Upload Student Answer Script */}
+      {/* Step 4: Upload Student Answer Script (Gated strictly until approval!) */}
       <div className="mb-10 pt-8 border-t border-slate-200">
         <div className="text-center mb-4">
           <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest">
-            Step 2: Upload Student Answer Sheet
+            Step 4: Upload Student Answer Sheet
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Upload the student's handwritten or typed script (PDF, Word, or Scanned Images).
+            {currentAnswerKey?.status === 'approved'
+              ? `Ready: Upload student's handwritten or typed script. Will be evaluated against approved key (v${currentAnswerKey.version}).`
+              : "Gated: Answer key must be reviewed and approved by faculty in Steps 1–3 before uploading student answer scripts."}
           </p>
         </div>
 
-        <div className="max-w-xl mx-auto">
-          <FileUploader
-            label="Student Answer Script"
-            description="PDF/DOCX/Images containing custom handwritten or typed answers"
-            onFileSelect={setSourceDoc}
-            selectedFile={sourceDoc}
-            icon={<svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>}
-          />
-        </div>
+        {currentAnswerKey?.status === 'approved' ? (
+          <div className="max-w-xl mx-auto">
+            <FileUploader
+              label="Student Answer Script"
+              description="PDF/DOCX/Images containing custom handwritten or typed answers"
+              onFileSelect={setSourceDoc}
+              selectedFile={sourceDoc}
+              icon={<svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>}
+            />
+          </div>
+        ) : (
+          <div className="max-w-xl mx-auto p-8 bg-slate-100 rounded-3xl border-2 border-dashed border-slate-300 text-center flex flex-col items-center justify-center gap-3 text-slate-400">
+            <div className="w-12 h-12 rounded-2xl bg-slate-200 flex items-center justify-center text-slate-500">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+            </div>
+            <div>
+              <p className="font-bold text-slate-700 text-sm">Step 4 is Locked</p>
+              <p className="text-xs text-slate-500 max-w-sm mt-1">
+                Complete and explicitly <strong>Approve</strong> the Answer Key in Step 1–3 above to unlock student script evaluation.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -886,6 +989,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Step 5: Evaluate & View Results */}
       <button
         onClick={handleAnalyze}
         disabled={isLoading || !sourceDoc || !currentAnswerKey || currentAnswerKey.status !== 'approved'}
@@ -903,13 +1007,13 @@ const App: React.FC = () => {
             </div>
           </>
         ) : !currentAnswerKey ? (
-          <span className="text-sm">Please Prepare Answer Key in Step 1 First</span>
+          <span className="text-sm">Step 5: Prepare Answer Key in Step 1 to Begin</span>
         ) : currentAnswerKey.status !== 'approved' ? (
-          <span className="text-sm">Approve Answer Key in Step 1 to Enable Evaluation</span>
+          <span className="text-sm">Step 5: Approve Answer Key to Enable Evaluation</span>
         ) : !sourceDoc ? (
-          <span className="text-sm">Upload Student Answer Sheet in Step 2 to Evaluate</span>
+          <span className="text-sm">Step 5: Upload Student Script in Step 4 to Evaluate</span>
         ) : (
-          "Run Evaluation"
+          "Step 5: Run Evaluation & Generate Report 🚀"
         )}
       </button>
     </div>

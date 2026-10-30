@@ -54,7 +54,9 @@ import {
 } from '../server/pricing';
 import { usageLedger } from '../server/usageLedger';
 import { answerKeyService, AnswerKeyValidationError } from '../server/answerKeyService';
-import { CanonicalAnswerKey, CanonicalQuestionKey } from '../server/types';
+import { CanonicalAnswerKey, CanonicalQuestionKey, StudentExtractedScript } from '../server/types';
+import { documentProcessor } from '../server/documentProcessor';
+import { studentExtractor, ExtractionValidationError } from '../server/studentExtractor';
 
 let passedTests = 0;
 let totalTests = 0;
@@ -1085,7 +1087,45 @@ async function runTests() {
       };
     }
 
-    // Student script evaluation mock response
+    // Stage 1: Student script extraction mock response
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Anatomy Student',
+          examTitle: 'Anatomy End-Term Assessment',
+          answers: [
+            {
+              questionId: '1',
+              studentAnswerText: 'The median nerve enters the forearm between two heads of pronator teres, gives anterior interosseous branch, supplies flexors...',
+              diagramDescription: 'Forearm flexor compartment diagram drawn with median nerve highlighted.',
+              formulas: [],
+              isAttempted: true,
+              confidence: 0.95,
+              flaggedUncertain: false,
+            },
+            {
+              questionId: '2.a',
+              studentAnswerText: 'Proximal row: Scaphoid, Lunate, Triquetrum, Pisiform. Distal row: Trapezium, Trapezoid, Capitate, Hamate.',
+              isAttempted: true,
+              confidence: 0.98,
+              flaggedUncertain: false,
+            },
+            {
+              questionId: '2.b',
+              studentAnswerText: 'Carpal tunnel syndrome occurs due to compression of median nerve beneath flexor retinaculum, causing ape thumb and thenar wasting.',
+              isAttempted: true,
+              confidence: 0.94,
+              flaggedUncertain: false,
+            },
+          ],
+          warnings: [],
+          visualEvidenceRetained: true,
+        }),
+        usageMetadata: { promptTokenCount: 2200, candidatesTokenCount: 400 },
+      };
+    }
+
+    // Stage 2: Student script evaluation mock response
     return {
       text: JSON.stringify({
         studentName: 'Anatomy Student',
@@ -1110,7 +1150,7 @@ async function runTests() {
           actionPoints: ['Revise sensory nerve distributions.'],
         },
       }),
-      usageMetadata: { promptTokenCount: 4200, candidatesTokenCount: 850, cachedContentTokenCount: 1200 },
+      usageMetadata: { promptTokenCount: 2000, candidatesTokenCount: 450, cachedContentTokenCount: 1200 },
     };
   });
 
@@ -1142,6 +1182,10 @@ async function runTests() {
     answerKeyDoc: {
       name: 'Official_Key_Anatomy.pdf',
       text: 'Official Marking Scheme: Q1. Median nerve model answer (10 marks). Q2. Carpal bones and syndrome (5 marks).',
+    },
+    questionPaperDoc: {
+      name: 'Question_Paper_Anatomy.pdf',
+      text: 'Question 1: Course of median nerve (10 marks). Question 2: Carpal bones (5 marks).',
     },
     title: 'Extracted Official Model Answer Key',
     subject: 'Anatomy',
@@ -1405,8 +1449,23 @@ async function runTests() {
 
   // 12. Reusing approved answer key across multiple student scripts without repeated LLM calls
   let llmCallCount = 0;
-  setMockGeminiProvider(async () => {
+  setMockGeminiProvider(async ({ correlationId }) => {
     llmCallCount++;
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: `Batch Student ${llmCallCount}`,
+          examTitle: 'Anatomy End-Term Assessment',
+          answers: [
+            { questionId: '1', studentAnswerText: 'Course and branches of median nerve described in detail.', isAttempted: true, confidence: 0.95 },
+            { questionId: '2.a', studentAnswerText: 'All 8 carpal bones named correctly.', isAttempted: true, confidence: 0.98 },
+            { questionId: '2.b', studentAnswerText: 'Carpal tunnel syndrome explained.', isAttempted: true, confidence: 0.94 },
+          ],
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
     return {
       text: JSON.stringify({
         studentName: `Student ${llmCallCount}`,
@@ -1431,7 +1490,7 @@ async function runTests() {
           actionPoints: ['Keep it up.'],
         },
       }),
-      usageMetadata: { promptTokenCount: 3000, candidatesTokenCount: 500 },
+      usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 400 },
     };
   });
 
@@ -1458,7 +1517,7 @@ async function runTests() {
   const rep1 = await evaluationEngine.evaluate(studentJob1);
   const rep2 = await evaluationEngine.evaluate(studentJob2);
   assert(rep1.totalScore === 18 && rep2.totalScore === 18, 'Both batch students evaluated successfully using shared approved answer key.');
-  assert(llmCallCount === 2, 'Reused single approved answer key across 2 students without re-generating key (only 2 student grading calls made).');
+  assert(llmCallCount === 4, 'Reused single approved answer key across 2 students (2 extractions + 2 evaluations, 0 answer key regenerations).');
 
   // 13. Verification that answer key generation/extraction calls are isolated from student grading calls in usage ledger
   const keySummary = usageLedger.getJobUsageSummary(aiKey.id, instA_User);
@@ -1466,8 +1525,10 @@ async function runTests() {
 
   assert(keySummary !== null && keySummary.calls.length > 0, 'Usage ledger recorded attempt for answer key generation job.');
   assert(keySummary!.calls[0].pipelineStage === 'answer_key_generation', 'Answer key generation attempts strictly tagged with pipelineStage: answer_key_generation.');
-  assert(studentSummary !== null && studentSummary.calls.length > 0, 'Usage ledger recorded attempt for student grading job.');
-  assert(studentSummary!.calls[0].pipelineStage === 'grading', 'Student grading attempts strictly tagged with pipelineStage: grading.');
+  assert(studentSummary !== null && studentSummary.calls.length >= 2, 'Usage ledger recorded attempts for both extraction and grading stages.');
+  const hasExtStage = studentSummary!.calls.some((c) => c.pipelineStage === 'student_extraction');
+  const hasGradeStage = studentSummary!.calls.some((c) => c.pipelineStage === 'grading');
+  assert(hasExtStage && hasGradeStage, 'Student evaluation records distinct student_extraction and grading stages.');
 
   // 14. Evaluation report retains answer-key version, ID, and source-mode
   assert(rep1.answerKeyId === reapprovedKey.id, 'Evaluation report retains answerKeyId.');
@@ -1514,12 +1575,368 @@ async function runTests() {
   const legacyReport = await evaluationEngine.evaluate(legacyJob);
   assert(legacyReport.totalScore === 10, 'Backward compatibility: Legacy requests without canonical answer key continue evaluating cleanly.');
 
-  // Clean up mock provider
-  setMockGeminiProvider(null);
+  // 16. Strict rejection of duplicate question IDs during approval
+  const duplicateIdKey: CanonicalAnswerKey = {
+    id: `ak_dup_${Date.now()}`,
+    examId: `exam_${Date.now()}`,
+    title: 'Duplicate IDs Exam',
+    sourceMode: 'ai_generated',
+    version: 1,
+    status: 'draft',
+    totalMaxMarks: 20,
+    questions: [
+      {
+        questionId: '1',
+        maxMarks: 10,
+        referenceAnswer: 'First question answer',
+        expectedConcepts: ['Concept A'],
+        acceptableAlternatives: [],
+        markingCriteria: ['Full marks'],
+      },
+      {
+        questionId: '1', // DUPLICATE ID!
+        maxMarks: 10,
+        referenceAnswer: 'Second question answer with duplicate ID',
+        expectedConcepts: ['Concept B'],
+        acceptableAlternatives: [],
+        markingCriteria: ['Full marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(duplicateIdKey);
+
+  assertThrows(
+    () => answerKeyService.approveAnswerKey(duplicateIdKey.id, instA_User),
+    'duplicate question number',
+    'Approval strictly rejected if any duplicate question numbers exist.'
+  );
+
+  // 17. Rejection of Mode 2 extraction when answer key document is missing
+  let caughtMissingDoc = false;
+  try {
+    await answerKeyService.extractFromUploadedKey({
+      answerKeyDoc: null as any,
+      title: 'Missing Doc Exam',
+      metadata: { institutionId: instA_User.institutionId, createdBy: instA_User.userId },
+    });
+  } catch (err: any) {
+    if (String(err?.message || err).toLowerCase().includes('document content')) {
+      caughtMissingDoc = true;
+    }
+  }
+  assert(caughtMissingDoc, 'Mode 2 extraction strictly rejected if answer key document is missing.');
+
+  // 18. Token minimization: verify document processor does NOT retransmit visual QP/AK pages when canonical key is present
+  const docPrep = documentProcessor.prepareInput({
+    sourceDoc: {
+      name: 'student_script.pdf',
+      base64: 'JVBERi0xLjQK...',
+      mimeType: 'application/pdf',
+      text: 'Student answers to questions...',
+    },
+    questionPaper: {
+      name: 'QP.pdf',
+      base64: 'QP_BASE64_DATA...',
+      mimeType: 'application/pdf',
+      text: 'Question 1: Explain concept...',
+    },
+    canonicalAnswerKey: reapprovedKey,
+    mode: 'without-manual',
+    studentName: 'Minimization Test Student',
+  });
+
+  const hasVisualQP = docPrep.contentsParts.some((p: any) =>
+    typeof p.text === 'string' && p.text.includes('DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)')
+  );
+  const hasVisualAK = docPrep.contentsParts.some((p: any) =>
+    typeof p.text === 'string' && p.text.includes('DOCUMENT_START: OFFICIAL ANSWER KEY (Visual Reference)')
+  );
+  const hasVisualStudent = docPrep.contentsParts.some((p: any) =>
+    typeof p.text === 'string' && p.text.includes('STUDENT ACTUAL ANSWER SCRIPT')
+  );
+
+  assert(!hasVisualQP, 'Context Minimization: Visual Question Paper is NOT re-transmitted when approved canonical key is present.');
+  assert(!hasVisualAK, 'Context Minimization: Visual Answer Key is NOT re-transmitted when approved canonical key is present.');
+  assert(hasVisualStudent, 'Student handwritten answer script visual pages are faithfully preserved for diagram & handwriting inspection.');
+
+  // 19. Model routing & selective escalation
+  setMockGeminiProvider(async ({ model }) => {
+    return {
+      text: JSON.stringify({
+        studentName: 'Model Routing Student',
+        testTitle: 'Routing Test',
+        testTopics: 'Anatomy',
+        testDate: '2026-10-30',
+        totalScore: 10,
+        maxScore: 10,
+        questions: [{ qNo: '1', marks: 10, maxMarks: 10, isCorrect: true, feedbackPoints: ['Accurate.'] }],
+        generalFeedback: {
+          overallPerformance: ['Good.'],
+          mcqs: [],
+          contentAccuracy: ['Good.'],
+          completenessOfAnswers: ['Good.'],
+          presentationDiagrams: [],
+          investigations: [],
+          attemptingQuestions: ['Attempted.'],
+          actionPoints: ['Keep it up.'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 200 },
+    };
+  });
+
+  const liteResult = await callGeminiWithFallback(
+    [{ text: 'Test content' }],
+    'Test system instruction',
+    `routing_test_${Date.now()}`,
+    {
+      model: 'gemini-3.1-flash-lite',
+      jobId: `job_lite_${Date.now()}`,
+      institutionId: instA_User.institutionId,
+      pipelineStage: 'grading',
+    }
+  );
+
+  assert(liteResult.modelUsed === 'gemini-3.1-flash-lite', 'Model routing successfully routes routine calls to cost-effective gemini-3.1-flash-lite.');
 
   // ==========================================================================
-  // Summary
+  // GROUP 12: Two-Stage LLM Evaluation Architecture (Stage 1 Extraction + Stage 2 Evaluation)
   // ==========================================================================
+  console.log('\n--- TEST GROUP 12: Two-Stage LLM Architecture (Extraction & Evaluation) ---');
+
+  // Test 1: Stage 1 Student Answer Extraction
+  setMockGeminiProvider(async ({ correlationId }) => {
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Rahul Kumar',
+          examTitle: 'Anatomy End-Term Assessment',
+          answers: [
+            {
+              questionId: '1',
+              subquestionId: null,
+              studentAnswerText: 'The median nerve arises from lateral and medial cords of brachial plexus. It runs down the arm into the cubital fossa...',
+              diagramDescription: 'Hand-drawn schematic of cubital fossa showing relations of biceps tendon, brachial artery, and median nerve from lateral to medial.',
+              formulas: ['Root value: C5, C6, C7, C8, T1'],
+              pageReferences: [1, 2],
+              isAttempted: true,
+              confidence: 0.96,
+              flaggedUncertain: false,
+            },
+            {
+              questionId: '2.a',
+              subquestionId: 'a',
+              studentAnswerText: 'Carpal bones: Scaphoid, Lunate, Triquetrum, Pisiform, Trapezium, Trapezoid, Capitate, Hamate.',
+              isAttempted: true,
+              confidence: 0.99,
+              flaggedUncertain: false,
+            },
+            // Note: Question 2.b is intentionally omitted by student to test coverage validation!
+          ],
+          unmappedContent: [],
+          warnings: [],
+          visualEvidenceRetained: true,
+        }),
+        usageMetadata: { promptTokenCount: 2100, candidatesTokenCount: 450 },
+      };
+    }
+
+    return {
+      text: JSON.stringify({
+        studentName: 'Rahul Kumar',
+        testTitle: 'Anatomy Assessment',
+        testTopics: 'Upper Limb Anatomy',
+        testDate: '2026-10-30',
+        totalScore: 13,
+        maxScore: 20,
+        questions: [
+          { qNo: '1', marks: 8.5, maxMarks: 10, isCorrect: true, feedbackPoints: ['Good anatomical relations in cubital fossa.', 'Well-labeled diagram.'] },
+          { qNo: '2.a', marks: 4.5, maxMarks: 5, isCorrect: true, feedbackPoints: ['All 8 carpal bones enumerated in anatomical order.'] },
+          { qNo: '2.b', marks: 0, maxMarks: 5, isCorrect: false, feedbackPoints: ['Question not attempted by student. 0 marks awarded.'] },
+        ],
+        generalFeedback: {
+          overallPerformance: ['Satisfactory performance.'],
+          mcqs: [],
+          contentAccuracy: ['Accurate descriptions.'],
+          completenessOfAnswers: ['Question 2.b was omitted.'],
+          presentationDiagrams: ['Clear hand-drawn schematic with appropriate labeling.'],
+          investigations: [],
+          attemptingQuestions: ['Attempted Q1 and Q2.a. Missed Q2.b.'],
+          actionPoints: ['Attempt all questions to maximize score potential.'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1900, candidatesTokenCount: 400 },
+    };
+  });
+
+  const sampleStudentDoc = {
+    name: 'Rahul_Kumar_MBBS_Anatomy.pdf',
+    text: 'Student Script Content...',
+    base64: 'JVBERi0xLjQKJ_STUDENT_SCRIPT_MOCK_BASE64_DATA',
+    mimeType: 'application/pdf',
+  };
+
+  // Test Stage 1 extraction
+  const extractedScript = await studentExtractor.extractStudentAnswers(
+    sampleStudentDoc,
+    reapprovedKey,
+    `two_stage_corr_${Date.now()}`,
+    {
+      fallbackStudentName: 'Rahul Kumar',
+    }
+  );
+
+  assert(extractedScript.studentName === 'Rahul Kumar', 'Stage 1: Student name extracted correctly.');
+  assert(extractedScript.answers.length === 3, 'Stage 1: Extracted script maps all 3 canonical exam questions.');
+  assert(extractedScript.answers[0].questionId === '1', 'Stage 1: Question 1 mapped.');
+  assert(extractedScript.answers[0].isAttempted === true, 'Stage 1: Question 1 isAttempted is true.');
+  assert(Boolean(extractedScript.answers[0].diagramDescription), 'Stage 1: Diagram description preserved for Q1.');
+  assert(Boolean(extractedScript.answers[0].formulas && extractedScript.answers[0].formulas.length > 0), 'Stage 1: Formulas preserved.');
+  assert(extractedScript.visualEvidenceRetained === true, 'Stage 1: Visual evidence retained flag is true.');
+
+  // Test 2: Question coverage check — omitted question 2.b is marked unattempted, never fabricated!
+  const q2b = extractedScript.answers.find((a) => a.questionId === '2.b');
+  assert(q2b !== undefined, 'Stage 1: Omitted question 2.b is present in coverage mapping.');
+  assert(q2b!.isAttempted === false, 'Stage 1: Omitted question 2.b is marked isAttempted: false (NEVER fabricated!).');
+  assert(q2b!.studentAnswerText === '[Not Attempted]', 'Stage 1: Omitted question text is [Not Attempted].');
+
+  // Test 3: Flagging uncertain handwriting
+  const uncertainExtraction = studentExtractor.validateAndNormalizeExtractedScript(
+    {
+      studentName: 'Faint Script Student',
+      answers: [
+        {
+          questionId: '1',
+          studentAnswerText: 'Partially legible text regarding median nerve',
+          isAttempted: true,
+          confidence: 0.55,
+          flaggedUncertain: true,
+          flaggedIssue: 'Handwriting faint and partially cropped on line 4',
+        },
+      ],
+    },
+    reapprovedKey,
+    'Faint Script Student'
+  );
+
+  assert(uncertainExtraction.answers[0].flaggedUncertain === true, 'Stage 1: Uncertain handwriting flagged honestly.');
+  assert(uncertainExtraction.answers[0].flaggedIssue !== undefined, 'Stage 1: flaggedIssue details the illegibility.');
+
+  // Test 4: Rejection of malformed extraction JSON
+  assertThrows(
+    () => studentExtractor.validateAndNormalizeExtractedScript(null as any, reapprovedKey, 'Test'),
+    'not a structured JSON object',
+    'Stage 1: Rejects null or malformed extraction responses.'
+  );
+
+  // Test 5: Rejection of empty student document during extraction
+  let caughtEmptyDoc = false;
+  try {
+    await studentExtractor.extractStudentAnswers(
+      { name: 'empty.pdf' },
+      reapprovedKey,
+      'corr_empty'
+    );
+  } catch (err: any) {
+    if (String(err?.message || err).toLowerCase().includes('missing or empty')) {
+      caughtEmptyDoc = true;
+    }
+  }
+  assert(caughtEmptyDoc, 'Stage 1: Extraction strictly rejected if student answer script is missing or empty.');
+
+  // Test 6: Stage 2 Grading context assembly — zero exam PDFs retransmitted
+  const stage2Context = evaluationEngine.prepareStage2GradingContext(
+    extractedScript,
+    reapprovedKey,
+    'without-manual',
+    'Rahul Kumar'
+  );
+
+  const hasExamPdf = stage2Context.contentsParts.some(
+    (p: any) => typeof p.text === 'string' && (p.text.includes('DOCUMENT_START: OFFICIAL QUESTION PAPER') || p.text.includes('DOCUMENT_START: OFFICIAL ANSWER KEY'))
+  );
+  assert(!hasExamPdf, 'Stage 2: Original exam PDFs and scans are NOT retransmitted to grading model.');
+
+  const hasStructuredExam = stage2Context.contentsParts.some(
+    (p: any) => typeof p.text === 'string' && p.text.includes('APPROVED CANONICAL EXAM REFERENCE')
+  );
+  assert(hasStructuredExam, 'Stage 2: Approved canonical exam JSON is transmitted.');
+
+  const hasExtractedStudent = stage2Context.contentsParts.some(
+    (p: any) => typeof p.text === 'string' && p.text.includes('EXTRACTED STUDENT RESPONSES (STAGE 1 OUTPUT)')
+  );
+  assert(hasExtractedStudent, 'Stage 2: Extracted student response JSON is transmitted.');
+
+  // Test 7: End-to-end two-stage evaluation job execution
+  const twoStageJob = evaluationQueue.enqueue(
+    {
+      sourceDoc: sampleStudentDoc,
+      canonicalAnswerKey: reapprovedKey,
+      mode: 'without-manual',
+      studentName: 'Rahul Kumar',
+    },
+    instA_User
+  );
+
+  const twoStageReport = await evaluationEngine.evaluate(twoStageJob);
+
+  assert(twoStageReport.studentName === 'Rahul Kumar', 'Two-Stage E2E: Evaluated report student name matches.');
+  assert(twoStageReport.totalScore === 13, 'Two-Stage E2E: Awarded total score matches (13).');
+  assert(twoStageReport.maxScore === 20, 'Two-Stage E2E: Max score matches canonical key (20).');
+  assert(twoStageReport.questions.length === 3, 'Two-Stage E2E: Evaluated all 3 questions.');
+  assert(twoStageReport.questions[2].marks === 0, 'Two-Stage E2E: Unattempted question 2.b awarded 0 marks.');
+  assert(twoStageJob.extractedScript !== undefined, 'Two-Stage E2E: EvaluationJob preserves extractedScript.');
+
+  // Test 8: Score bounds validation — awarded marks cannot exceed maxMarks
+  assertThrows(
+    () =>
+      evaluationEngine.validateAndNormalizeReport(
+        {
+          studentName: 'Over-score Student',
+          questions: [{ qNo: '1', marks: 15, maxMarks: 10, isCorrect: true, feedbackPoints: ['Good'] }], // 15 > 10!
+          generalFeedback: {},
+        },
+        'without-manual',
+        'Over-score Student'
+      ),
+    'exceed maximum permissible marks',
+    'Stage 2: Awarded marks exceeding maxMarks is strictly rejected.'
+  );
+
+  // Test 9: Score bounds validation — negative marks rejected
+  assertThrows(
+    () =>
+      evaluationEngine.validateAndNormalizeReport(
+        {
+          studentName: 'Negative Score Student',
+          questions: [{ qNo: '1', marks: -2, maxMarks: 10, isCorrect: false, feedbackPoints: ['Penalty'] }],
+          generalFeedback: {},
+        },
+        'without-manual',
+        'Negative Score Student'
+      ),
+    'non-negative number >= 0',
+    'Stage 2: Negative marks are strictly rejected.'
+  );
+
+  // Test 10: Usage ledger tracks distinct student_extraction and grading attempts
+  const twoStageUsage = usageLedger.getJobUsageSummary(twoStageJob.id, instA_User);
+  assert(twoStageUsage !== null, 'Usage ledger summary exists for two-stage job.');
+  const extCalls = twoStageUsage!.calls.filter((c) => c.pipelineStage === 'student_extraction');
+  const gradeCalls = twoStageUsage!.calls.filter((c) => c.pipelineStage === 'grading');
+  assert(extCalls.length >= 1, 'Usage ledger recorded Stage 1 student_extraction call.');
+  assert(gradeCalls.length >= 1, 'Usage ledger recorded Stage 2 grading call.');
+  assert((twoStageJob.metrics.inputTokens ?? 0) > 0, 'Consolidated inputTokens recorded in job metrics.');
+  assert((twoStageJob.metrics.outputTokens ?? 0) > 0, 'Consolidated outputTokens recorded in job metrics.');
+
+  // Clean up mock provider
+  setMockGeminiProvider(null);
   console.log('\n========================================================================');
   console.log(` ALL REGRESSION TESTS COMPLETED: ${passedTests}/${totalTests} PASSED`);
   console.log('========================================================================\n');

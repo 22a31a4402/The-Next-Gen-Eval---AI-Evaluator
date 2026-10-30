@@ -1,0 +1,43 @@
+{
+  "id": "ak_dup_1793350808586",
+  "examId": "exam_1793350808586",
+  "title": "Duplicate IDs Exam",
+  "sourceMode": "ai_generated",
+  "version": 1,
+  "status": "approved",
+  "totalMaxMarks": 20,
+  "questions": [
+    {
+      "questionId": "1",
+      "maxMarks": 10,
+      "referenceAnswer": "First question answer",
+      "expectedConcepts": [
+        "Concept A"
+      ],
+      "acceptableAlternatives": [],
+      "markingCriteria": [
+        "Full marks"
+      ]
+    },
+    {
+      "questionId": "1",
+      "maxMarks": 10,
+      "referenceAnswer": "Second question answer with duplicate ID",
+      "expectedConcepts": [
+        "Concept B"
+      ],
+      "acceptableAlternatives": [],
+      "markingCriteria": [
+        "Full marks"
+      ]
+    }
+  ],
+  "metadata": {
+    "institutionId": "inst_aarshiv_1793350797796",
+    "createdBy": "prof_sharma_1793350797796",
+    "createdAt": 1793350808586,
+    "updatedAt": 1793350808588,
+    "approvedAt": 1793350808588,
+    "approvedBy": "prof_sharma_1793350797796"
+  }
+}

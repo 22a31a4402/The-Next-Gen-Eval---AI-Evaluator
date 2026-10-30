@@ -603,11 +603,18 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     }
 
     let calculatedSum = 0;
+    const seenIds = new Set<string>();
     for (let idx = 0; idx < existing.questions.length; idx++) {
       const q = existing.questions[idx];
-      if (!q.questionId || !String(q.questionId).trim()) {
+      const qId = String(q.questionId || '').trim();
+      if (!qId) {
         throw new AnswerKeyValidationError(`Cannot approve answer key: Question at index ${idx} is missing a question identifier.`);
       }
+
+      if (seenIds.has(qId)) {
+        throw new AnswerKeyValidationError(`Cannot approve answer key: Duplicate question number "${qId}" detected. Every question must have a unique identifier.`);
+      }
+      seenIds.add(qId);
 
       const maxM = Number(q.maxMarks);
       if (!Number.isFinite(maxM) || maxM <= 0) {

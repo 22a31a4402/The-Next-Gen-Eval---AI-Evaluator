@@ -1,0 +1,26 @@
+{
+  "id": "e97ff61f-0c8c-4f24-abac-d9fac92ac70b",
+  "correlationId": "eval_1793350852063_379bf204",
+  "status": "cancelled",
+  "progressPercent": 0,
+  "currentStepMessage": "Evaluation job was cancelled by user.",
+  "mode": "without-manual",
+  "studentName": "Cancel Test Student",
+  "testTitle": "Academic Assessment",
+  "institutionId": "inst_aarshiv_01",
+  "createdBy": "prof_sharma",
+  "createdAt": 1793350852063,
+  "updatedAt": 1793350852064,
+  "metrics": {
+    "correlationId": "eval_1793350852063_379bf204",
+    "startTime": 1793350852063,
+    "cacheHit": false,
+    "retriesCount": 0
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "cancel_me.pdf",
+      "text": "To be cancelled"
+    }
+  }
+}

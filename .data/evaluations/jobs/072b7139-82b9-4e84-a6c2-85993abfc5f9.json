@@ -1,0 +1,26 @@
+{
+  "id": "072b7139-82b9-4e84-a6c2-85993abfc5f9",
+  "correlationId": "eval_1793352591877_2b054c5a",
+  "status": "queued",
+  "progressPercent": 0,
+  "currentStepMessage": "Job queued for evaluation",
+  "mode": "without-manual",
+  "studentName": "Phase 2 Test Student",
+  "testTitle": "Upper Limb Anatomy & Embryology",
+  "institutionId": "inst_aarshiv_01",
+  "createdBy": "prof_sharma",
+  "createdAt": 1793352591877,
+  "updatedAt": 1793352591877,
+  "metrics": {
+    "correlationId": "eval_1793352591877_2b054c5a",
+    "startTime": 1793352591877,
+    "cacheHit": false,
+    "retriesCount": 0
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "phase2_script_1793352591877.pdf",
+      "text": "Anatomy answer script content 1793352591877"
+    }
+  }
+}

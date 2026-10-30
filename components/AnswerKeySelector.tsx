@@ -54,7 +54,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
   // Handle Mode 1: Generate Answer Key Using AI
   const handleGenerateKey = async () => {
     if (!questionPaperFile) {
-      setErrorMessage('Please upload a Question Paper first.');
+      setErrorMessage('Question Paper (Required) is missing. Upload the question paper to extract questions and generate model answers.');
       return;
     }
 
@@ -73,7 +73,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
       });
 
       onAnswerKeyChange(generated);
-      setIsReviewModalOpen(true); // Open review modal so instructor can review immediately
+      setIsReviewModalOpen(true); // Open review modal immediately for faculty review & approval
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to generate answer key.');
     } finally {
@@ -84,18 +84,20 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
 
   // Handle Mode 2: Upload Existing Answer Key
   const handleExtractKey = async () => {
-    if (!answerKeyFile) {
-      setErrorMessage('Please upload the Official Answer Key document first.');
+    if (!questionPaperFile || !answerKeyFile) {
+      setErrorMessage(
+        'Both Question Paper (Required) and Official Answer Key (Required) must be uploaded in Mode 2 to cross-check question numbering and mark allocation.'
+      );
       return;
     }
 
     setErrorMessage(null);
     setIsProcessing(true);
-    setProcessingStep('Parsing uploaded answer key and structuring marking scheme...');
+    setProcessingStep('Parsing uploaded answer key and cross-validating against question paper...');
 
     try {
       const akData = await fileToData(answerKeyFile);
-      const qpData = questionPaperFile ? await fileToData(questionPaperFile) : null;
+      const qpData = await fileToData(questionPaperFile);
 
       const extracted = await extractAnswerKeyApi({
         answerKeyDoc: akData,
@@ -107,7 +109,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
       });
 
       onAnswerKeyChange(extracted);
-      setIsReviewModalOpen(true); // Open review modal so instructor can review immediately
+      setIsReviewModalOpen(true); // Open review modal immediately for faculty review & approval
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to extract answer key.');
     } finally {
@@ -165,7 +167,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
               </h4>
 
               <p className="text-xs text-slate-500 font-medium">
-                {currentAnswerKey.questions?.length || 0} Questions • Total {currentAnswerKey.totalMaxMarks} Marks • Mode: {currentAnswerKey.sourceMode === 'ai_generated' ? 'AI Generated' : 'Uploaded Key'}
+                {currentAnswerKey.questions?.length || 0} Questions • Total {currentAnswerKey.totalMaxMarks} Marks • Mode: {currentAnswerKey.sourceMode === 'ai_generated' ? 'AI Generated (Mode 1)' : 'Uploaded Key (Mode 2)'}
                 {currentAnswerKey.metadata?.approvedBy && (
                   <span> • Approved by: {currentAnswerKey.metadata.approvedBy}</span>
                 )}
@@ -182,7 +184,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
                 Review & Edit
               </button>
 
-              {currentAnswerKey.status !== 'approved' && (
+              {currentAnswerKey.status !== 'approved' ? (
                 <button
                   type="button"
                   onClick={() => setIsReviewModalOpen(true)}
@@ -191,6 +193,11 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
                   <ShieldCheck className="w-3.5 h-3.5" />
                   Approve Key
                 </button>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-bold border border-emerald-200">
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  Ready for Evaluation
+                </span>
               )}
 
               <button
@@ -204,11 +211,18 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
             </div>
           </div>
 
-          {currentAnswerKey.status !== 'approved' && (
+          {currentAnswerKey.status !== 'approved' ? (
             <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2.5 text-xs text-amber-800">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
-                <strong>Human approval required:</strong> The student grading pipeline strictly requires an <strong>approved</strong> answer key. Click "Approve Key" above to review and sign off.
+                <strong>Human approval required:</strong> The student grading pipeline strictly requires an <strong>approved</strong> answer key. Click "Approve Key" above to open the coordinated PDF review workspace and sign off.
+              </span>
+            </div>
+          ) : (
+            <div className="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2.5 text-xs text-emerald-800">
+              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Approved & Locked:</strong> This canonical answer key will be reused across student submissions without re-evaluating exam questions. Any subsequent edits will increment version and require re-approval.
               </span>
             </div>
           )}
@@ -220,7 +234,10 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
           <div className="grid sm:grid-cols-2 gap-4">
             {/* Mode 1 Card */}
             <div
-              onClick={() => setSelectedMode('ai_generated')}
+              onClick={() => {
+                setSelectedMode('ai_generated');
+                setErrorMessage(null);
+              }}
               className={`p-5 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
                 selectedMode === 'ai_generated'
                   ? 'border-purple-600 bg-purple-50/40 shadow-sm'
@@ -242,17 +259,20 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
                   1. Generate Answer Key Using AI
                 </h4>
                 <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                  Upload only the Question Paper. AI extracts questions, subquestions, reference answers, expected concepts, and marking rubrics for your review.
+                  Upload the question paper to extract questions, generate model answers, and prepare marking rubrics for faculty review.
                 </p>
               </div>
               <div className="mt-3 pt-2 border-t border-purple-100/50 flex items-center gap-1.5 text-[11px] font-bold text-purple-700">
-                <span>Requires Question Paper only</span>
+                <span>Requires Question Paper (Required) only</span>
               </div>
             </div>
 
             {/* Mode 2 Card */}
             <div
-              onClick={() => setSelectedMode('uploaded')}
+              onClick={() => {
+                setSelectedMode('uploaded');
+                setErrorMessage(null);
+              }}
               className={`p-5 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
                 selectedMode === 'uploaded'
                   ? 'border-emerald-600 bg-emerald-50/40 shadow-sm'
@@ -274,11 +294,11 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
                   2. Upload Existing Answer Key
                 </h4>
                 <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                  Upload an official answer key, model answers, or marking scheme (PDF/DOCX/image). AI parses and structures it for your review.
+                  Upload both documents to structure the official answers and cross-check question numbering, subquestions, and mark allocation.
                 </p>
               </div>
               <div className="mt-3 pt-2 border-t border-emerald-100/50 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                <span>Supports model answer scripts & rubrics</span>
+                <span>Requires Question Paper (Required) & Official Answer Key (Required)</span>
               </div>
             </div>
           </div>
@@ -327,8 +347,8 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
           {selectedMode === 'ai_generated' && (
             <div className="space-y-4">
               <FileUploader
-                label="Question Paper"
-                description="Upload Question Paper (PDF, Word, or Scanned Image). Max marks and questions will be extracted strictly."
+                label="Question Paper (Required)"
+                description="Upload the question paper to extract questions, generate model answers, and prepare marking rubrics for faculty review."
                 onFileSelect={onQuestionPaperFileChange}
                 selectedFile={questionPaperFile}
                 icon={<svg className="w-8 h-8 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>}
@@ -364,28 +384,28 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
             <div className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
                 <FileUploader
-                  label="Official Answer Key / Model Answers"
-                  description="Official model answers or marking rubric (PDF, DOCX, or Image)."
-                  onFileSelect={onAnswerKeyFileChange}
-                  selectedFile={answerKeyFile}
-                  icon={<svg className="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>}
-                />
-
-                <FileUploader
-                  label="Question Paper (Optional)"
-                  description="For question number cross-verification and missing question checks."
+                  label="Question Paper (Required)"
+                  description="Question Paper for question number cross-verification and missing question checks."
                   onFileSelect={onQuestionPaperFileChange}
                   selectedFile={questionPaperFile}
                   icon={<svg className="w-8 h-8 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>}
+                />
+
+                <FileUploader
+                  label="Official Answer Key / Model Answers / Marking Scheme (Required)"
+                  description="Official model answers or marking scheme (PDF, DOCX, or Image)."
+                  onFileSelect={onAnswerKeyFileChange}
+                  selectedFile={answerKeyFile}
+                  icon={<svg className="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>}
                 />
               </div>
 
               <button
                 type="button"
                 onClick={handleExtractKey}
-                disabled={!answerKeyFile || isProcessing}
+                disabled={!answerKeyFile || !questionPaperFile || isProcessing}
                 className={`w-full py-3.5 rounded-xl font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                  !answerKeyFile || isProcessing
+                  !answerKeyFile || !questionPaperFile || isProcessing
                     ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
                     : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
                 }`}
@@ -415,11 +435,13 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
         </div>
       )}
 
-      {/* Review & Approval Modal */}
+      {/* Review & Approval Modal with Coordinated PDF Workspace */}
       {currentAnswerKey && (
         <AnswerKeyReviewModal
           isOpen={isReviewModalOpen}
           answerKey={currentAnswerKey}
+          questionPaperFile={questionPaperFile}
+          answerKeyFile={answerKeyFile}
           onClose={() => setIsReviewModalOpen(false)}
           onSave={handleSaveModal}
           onApprove={handleApproveModal}

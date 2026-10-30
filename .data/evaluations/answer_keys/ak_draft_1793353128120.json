@@ -1,0 +1,32 @@
+{
+  "id": "ak_draft_1793353128120",
+  "examId": "exam_phys_01",
+  "title": "Physiology Paper 1",
+  "sourceMode": "ai_generated",
+  "version": 1,
+  "status": "approved",
+  "totalMaxMarks": 5,
+  "questions": [
+    {
+      "questionId": "1",
+      "maxMarks": 5,
+      "referenceAnswer": "Cardiac cycle phases",
+      "expectedConcepts": [
+        "Systole",
+        "Diastole"
+      ],
+      "acceptableAlternatives": [],
+      "markingCriteria": [
+        "Phases: 5 marks"
+      ]
+    }
+  ],
+  "metadata": {
+    "institutionId": "inst_aarshiv_01",
+    "createdBy": "prof_sharma",
+    "createdAt": 1793353128120,
+    "updatedAt": 1793353128121,
+    "approvedAt": 1793353128121,
+    "approvedBy": "prof_sharma"
+  }
+}

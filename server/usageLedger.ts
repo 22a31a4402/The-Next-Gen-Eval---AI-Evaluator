@@ -33,6 +33,7 @@ export type PipelineStage =
   | 'validating'
   | 'assembling_report'
   | 'extraction'
+  | 'student_extraction'
   | 'answer_key_generation'
   | 'answer_key_extraction'
   | 'correction'

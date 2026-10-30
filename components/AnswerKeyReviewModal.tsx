@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CanonicalAnswerKey, CanonicalQuestionKey } from '../types';
+import { ExamDocViewer } from './ExamDocViewer';
 import { 
   CheckCircle, 
   AlertTriangle, 
@@ -10,14 +11,21 @@ import {
   X, 
   Sparkles, 
   FileText, 
-  Check, 
   ShieldCheck,
-  Edit2
+  Edit2,
+  Check,
+  AlertCircle,
+  Columns,
+  Eye,
+  Sliders,
+  HelpCircle
 } from 'lucide-react';
 
 interface AnswerKeyReviewModalProps {
   isOpen: boolean;
   answerKey: CanonicalAnswerKey;
+  questionPaperFile?: File | null;
+  answerKeyFile?: File | null;
   onClose: () => void;
   onSave: (updated: CanonicalAnswerKey) => Promise<void>;
   onApprove: (keyId: string) => Promise<void>;
@@ -27,19 +35,54 @@ interface AnswerKeyReviewModalProps {
 export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
   isOpen,
   answerKey,
+  questionPaperFile,
+  answerKeyFile,
   onClose,
   onSave,
   onApprove,
   isLoading = false,
 }) => {
   const [editedKey, setEditedKey] = useState<CanonicalAnswerKey>(() => JSON.parse(JSON.stringify(answerKey)));
-  const [activeTab, setActiveTab] = useState<'questions' | 'metadata'>('questions');
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<'all' | 'flagged'>('all');
+  const [isApproving, setIsApproving] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [viewMode, setViewMode] = useState<'split' | 'editor_only' | 'doc_only'>('split');
 
   if (!isOpen) return null;
 
   const questions = editedKey.questions || [];
+
+  // Validation Checks
+  const validationErrors: string[] = [];
+  const seenIds = new Set<string>();
+
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    const qId = (q.questionId || '').trim();
+    if (!qId) {
+      validationErrors.push(`Question #${i + 1} has an empty identifier.`);
+    } else if (seenIds.has(qId)) {
+      validationErrors.push(`Duplicate question number: "${qId}". Each question must have a unique identifier.`);
+    } else {
+      seenIds.add(qId);
+    }
+
+    const marks = Number(q.maxMarks);
+    if (!Number.isFinite(marks) || marks <= 0) {
+      validationErrors.push(`Question "${qId || i + 1}" has invalid maximum marks (${q.maxMarks}). Must be positive (> 0).`);
+    }
+
+    if (!q.referenceAnswer || q.referenceAnswer.trim().length === 0) {
+      validationErrors.push(`Question "${qId || i + 1}" is missing a reference model answer.`);
+    }
+  }
+
+  const calculatedTotal = questions.reduce((sum, q) => sum + (Number(q.maxMarks) || 0), 0);
+  const flaggedCount = questions.filter((q) => Boolean(q.flaggedIssue)).length;
+  const isApproved = editedKey.status === 'approved';
+  const isValidForApproval = validationErrors.length === 0 && questions.length > 0;
 
   const handleQuestionChange = (idx: number, field: keyof CanonicalQuestionKey, value: any) => {
     const nextQuestions = [...questions];
@@ -48,17 +91,27 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
       [field]: value,
     };
 
-    // If maxMarks changed, clear invalid mark flag if now valid
     if (field === 'maxMarks' && Number(value) > 0 && nextQuestions[idx].flaggedIssue?.includes('maximum marks')) {
       nextQuestions[idx].flaggedIssue = undefined;
     }
 
-    // Recalculate total
     const newTotal = nextQuestions.reduce((acc, q) => acc + (Number(q.maxMarks) || 0), 0);
     setEditedKey({
       ...editedKey,
       questions: nextQuestions,
       totalMaxMarks: newTotal,
+    });
+  };
+
+  const handleResolveFlag = (idx: number) => {
+    const nextQuestions = [...questions];
+    nextQuestions[idx] = {
+      ...nextQuestions[idx],
+      flaggedIssue: undefined,
+    };
+    setEditedKey({
+      ...editedKey,
+      questions: nextQuestions,
     });
   };
 
@@ -71,14 +124,14 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
 
   const handleRemoveConcept = (qIdx: number, cIdx: number) => {
     const nextQuestions = [...questions];
-    const concepts = nextQuestions[qIdx].expectedConcepts.filter((_, idx) => idx !== cIdx);
+    const concepts = (nextQuestions[qIdx].expectedConcepts || []).filter((_, idx) => idx !== cIdx);
     nextQuestions[qIdx] = { ...nextQuestions[qIdx], expectedConcepts: concepts };
     setEditedKey({ ...editedKey, questions: nextQuestions });
   };
 
   const handleConceptChange = (qIdx: number, cIdx: number, val: string) => {
     const nextQuestions = [...questions];
-    const concepts = [...nextQuestions[qIdx].expectedConcepts];
+    const concepts = [...(nextQuestions[qIdx].expectedConcepts || [])];
     concepts[cIdx] = val;
     nextQuestions[qIdx] = { ...nextQuestions[qIdx], expectedConcepts: concepts };
     setEditedKey({ ...editedKey, questions: nextQuestions });
@@ -86,23 +139,45 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
 
   const handleAddCriteria = (qIdx: number) => {
     const nextQuestions = [...questions];
-    const criteria = [...(nextQuestions[qIdx].markingCriteria || []), '1 mark for correct definition/step'];
+    const criteria = [...(nextQuestions[qIdx].markingCriteria || []), 'Award full marks for thorough explanation'];
     nextQuestions[qIdx] = { ...nextQuestions[qIdx], markingCriteria: criteria };
     setEditedKey({ ...editedKey, questions: nextQuestions });
   };
 
   const handleRemoveCriteria = (qIdx: number, crIdx: number) => {
     const nextQuestions = [...questions];
-    const criteria = nextQuestions[qIdx].markingCriteria.filter((_, idx) => idx !== crIdx);
+    const criteria = (nextQuestions[qIdx].markingCriteria || []).filter((_, idx) => idx !== crIdx);
     nextQuestions[qIdx] = { ...nextQuestions[qIdx], markingCriteria: criteria };
     setEditedKey({ ...editedKey, questions: nextQuestions });
   };
 
   const handleCriteriaChange = (qIdx: number, crIdx: number, val: string) => {
     const nextQuestions = [...questions];
-    const criteria = [...nextQuestions[qIdx].markingCriteria];
+    const criteria = [...(nextQuestions[qIdx].markingCriteria || [])];
     criteria[crIdx] = val;
     nextQuestions[qIdx] = { ...nextQuestions[qIdx], markingCriteria: criteria };
+    setEditedKey({ ...editedKey, questions: nextQuestions });
+  };
+
+  const handleAddAlternative = (qIdx: number) => {
+    const nextQuestions = [...questions];
+    const alts = [...(nextQuestions[qIdx].acceptableAlternatives || []), 'Accept alternative valid approach or synonym'];
+    nextQuestions[qIdx] = { ...nextQuestions[qIdx], acceptableAlternatives: alts };
+    setEditedKey({ ...editedKey, questions: nextQuestions });
+  };
+
+  const handleRemoveAlternative = (qIdx: number, aIdx: number) => {
+    const nextQuestions = [...questions];
+    const alts = (nextQuestions[qIdx].acceptableAlternatives || []).filter((_, idx) => idx !== aIdx);
+    nextQuestions[qIdx] = { ...nextQuestions[qIdx], acceptableAlternatives: alts };
+    setEditedKey({ ...editedKey, questions: nextQuestions });
+  };
+
+  const handleAlternativeChange = (qIdx: number, aIdx: number, val: string) => {
+    const nextQuestions = [...questions];
+    const alts = [...(nextQuestions[qIdx].acceptableAlternatives || [])];
+    alts[aIdx] = val;
+    nextQuestions[qIdx] = { ...nextQuestions[qIdx], acceptableAlternatives: alts };
     setEditedKey({ ...editedKey, questions: nextQuestions });
   };
 
@@ -111,10 +186,10 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
     const newQuestion: CanonicalQuestionKey = {
       questionId: nextQId,
       maxMarks: 5,
-      referenceAnswer: 'Enter standard reference answer here...',
+      referenceAnswer: 'Model answer for Question ' + nextQId,
       expectedConcepts: ['Key concept 1', 'Key concept 2'],
-      acceptableAlternatives: ['Alternative phrasing or method'],
-      markingCriteria: ['Award full marks for thorough explanation', 'Award partial marks for relevant concepts'],
+      acceptableAlternatives: ['Alternative clinical description'],
+      markingCriteria: ['Award full marks for accurate definition', 'Award partial credit for relevant mechanisms'],
     };
     const nextQuestions = [...questions, newQuestion];
     const newTotal = nextQuestions.reduce((acc, q) => acc + (Number(q.maxMarks) || 0), 0);
@@ -139,342 +214,486 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
     });
   };
 
-  const handleSaveInternal = async () => {
+  const handleSaveOnly = async () => {
+    setIsSaving(true);
     setErrorMsg(null);
-    setSaveStatus('Saving changes...');
+    setSaveStatus(null);
     try {
       await onSave(editedKey);
-      setSaveStatus('Changes saved! (If previously approved, status is now Draft pending re-approval)');
-      setTimeout(() => setSaveStatus(null), 3000);
+      setSaveStatus('Changes saved successfully. Answer key remains in draft until approved.');
+      setTimeout(() => setSaveStatus(null), 4000);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to save changes.');
-      setSaveStatus(null);
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleApproveInternal = async () => {
-    setErrorMsg(null);
-    // Client-side pre-validation
-    const invalidQ = questions.find((q) => !Number.isFinite(q.maxMarks) || q.maxMarks <= 0);
-    if (invalidQ) {
-      setErrorMsg(`Cannot approve: Question ${invalidQ.questionId} has invalid or missing maximum marks (${invalidQ.maxMarks}). All questions must have positive maximum marks.`);
+  const handleApproveKey = async () => {
+    if (!isValidForApproval) {
+      setErrorMsg('Cannot approve answer key. Please resolve all validation errors first.');
       return;
     }
 
+    setIsApproving(true);
+    setErrorMsg(null);
     try {
-      // Save changes first if modified
+      // 1. Save any pending question edits first
       await onSave(editedKey);
+      // 2. Explicitly sign-off and approve
       await onApprove(editedKey.id);
       onClose();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to approve answer key.');
+      setErrorMsg(err.message || 'Approval failed.');
+    } finally {
+      setIsApproving(false);
     }
   };
 
+  const displayedQuestions = questions.filter((q) => {
+    if (activeFilter === 'flagged') return Boolean(q.flaggedIssue);
+    return true;
+  });
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl border border-slate-200 flex flex-col max-h-[90vh] overflow-hidden animate-scale-in">
-        
-        {/* Header */}
-        <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-slate-50/60">
-          <div>
-            <div className="flex items-center gap-3">
-              <h2 className="text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-                {editedKey.sourceMode === 'ai_generated' ? (
-                  <Sparkles className="w-5 h-5 text-purple-600" />
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4">
+      <div className="bg-white w-full h-[95vh] max-w-[1400px] rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
+        {/* Header Bar */}
+        <div className="bg-white px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${
+              editedKey.sourceMode === 'ai_generated' ? 'bg-purple-100 text-purple-600' : 'bg-emerald-100 text-emerald-600'
+            }`}>
+              {editedKey.sourceMode === 'ai_generated' ? <Sparkles className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-black text-slate-900 text-base tracking-tight">
+                  {editedKey.title || 'Exam Answer Key'}
+                </h3>
+                {isApproved ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-emerald-100 text-emerald-800 text-[11px] font-black rounded-full border border-emerald-200">
+                    <CheckCircle className="w-3 h-3 text-emerald-600" />
+                    Approved v{editedKey.version}
+                  </span>
+                ) : editedKey.status === 'needs_review' ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-orange-100 text-orange-800 text-[11px] font-black rounded-full border border-orange-200">
+                    <AlertTriangle className="w-3 h-3 text-orange-600" />
+                    Needs Review (v{editedKey.version})
+                  </span>
                 ) : (
-                  <FileText className="w-5 h-5 text-emerald-600" />
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-100 text-amber-800 text-[11px] font-black rounded-full border border-amber-200">
+                    <Clock className="w-3 h-3 text-amber-600" />
+                    Draft (v{editedKey.version})
+                  </span>
                 )}
-                Review & Approve Answer Key
-              </h2>
-
-              {/* Status Badge */}
-              {editedKey.status === 'approved' ? (
-                <span className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-black rounded-full border border-emerald-200">
-                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                  Approved v{editedKey.version}
-                </span>
-              ) : editedKey.status === 'needs_review' ? (
-                <span className="inline-flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-800 text-xs font-black rounded-full border border-orange-200">
-                  <AlertTriangle className="w-3.5 h-3.5 text-orange-600" />
-                  Needs Review (v{editedKey.version})
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 px-3 py-1 bg-amber-100 text-amber-800 text-xs font-black rounded-full border border-amber-200">
-                  <Clock className="w-3.5 h-3.5 text-amber-600" />
-                  Draft (v{editedKey.version})
-                </span>
-              )}
-            </div>
-
-            <p className="text-xs text-slate-500 mt-1 font-medium">
-              Source: <strong className="text-slate-700">{editedKey.sourceMode === 'ai_generated' ? 'AI Generated from Question Paper' : 'Extracted from Uploaded Key'}</strong> • Total Marks: <strong className="text-slate-700">{editedKey.totalMaxMarks}</strong> • Questions: <strong className="text-slate-700">{questions.length}</strong>
-            </p>
-          </div>
-
-          <button
-            onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-all cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Status / Warnings Banner */}
-        {editedKey.warnings && editedKey.warnings.length > 0 && (
-          <div className="bg-orange-50 border-b border-orange-100 p-4">
-            <div className="flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-orange-600 shrink-0 mt-0.5" />
-              <div className="text-xs text-orange-800">
-                <span className="font-bold">Extraction Warnings requiring human review:</span>
-                <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                  {editedKey.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
               </div>
+              <p className="text-xs text-slate-500 font-medium">
+                Mode: {editedKey.sourceMode === 'ai_generated' ? 'AI-Generated from Question Paper' : 'Extracted from Uploaded Answer Key'} • 
+                Total Marks: <strong className="text-slate-800 font-bold">{calculatedTotal}</strong>
+                {flaggedCount > 0 && (
+                  <span className="text-amber-600 font-bold"> • {flaggedCount} flagged issue{flaggedCount > 1 ? 's' : ''}</span>
+                )}
+              </p>
             </div>
           </div>
-        )}
 
-        {/* Global Notifications */}
-        {saveStatus && (
-          <div className="bg-blue-50 border-b border-blue-100 px-6 py-2.5 text-xs font-bold text-blue-700 flex items-center gap-2">
-            <Check className="w-4 h-4 text-blue-600" />
-            <span>{saveStatus}</span>
-          </div>
-        )}
-
-        {errorMsg && (
-          <div className="bg-red-50 border-b border-red-100 px-6 py-2.5 text-xs font-bold text-red-700 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-600" />
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        {/* Body content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={editedKey.title}
-                onChange={(e) => setEditedKey({ ...editedKey, title: e.target.value })}
-                className="text-base font-extrabold text-slate-800 border-b border-dashed border-slate-300 hover:border-slate-500 focus:border-blue-500 focus:outline-none px-1 py-0.5"
-                placeholder="Exam Title"
-              />
-              {editedKey.subject && (
-                <span className="text-xs text-slate-400 font-medium">({editedKey.subject})</span>
-              )}
+          {/* View Toggles & Close */}
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-bold text-slate-600">
+              <button
+                type="button"
+                onClick={() => setViewMode('split')}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'split' ? 'bg-white text-slate-900 shadow-sm' : 'hover:text-slate-900'
+                }`}
+              >
+                Side-by-Side Coordinated View
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('editor_only')}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'editor_only' ? 'bg-white text-slate-900 shadow-sm' : 'hover:text-slate-900'
+                }`}
+              >
+                Structured Editor Only
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('doc_only')}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'doc_only' ? 'bg-white text-slate-900 shadow-sm' : 'hover:text-slate-900'
+                }`}
+              >
+                PDF View Only
+              </button>
             </div>
 
             <button
-              onClick={handleAddQuestion}
-              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+              type="button"
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+              title="Close Workspace"
             >
-              <Plus className="w-3.5 h-3.5" />
-              Add Question
+              <X className="w-5 h-5" />
             </button>
           </div>
+        </div>
 
-          {/* Question Cards List */}
-          <div className="space-y-4">
-            {questions.map((q, qIdx) => (
-              <div 
-                key={qIdx}
-                className={`p-5 rounded-2xl border transition-all ${
-                  q.flaggedIssue 
-                    ? 'border-orange-300 bg-orange-50/30' 
-                    : q.maxMarks <= 0 
-                      ? 'border-red-300 bg-red-50/30'
-                      : 'border-slate-200 bg-white hover:border-slate-300 shadow-sm'
-                }`}
-              >
-                {/* Question Header */}
-                <div className="flex items-start justify-between gap-4 mb-3">
-                  <div className="flex items-center gap-3">
-                    <span className="px-2.5 py-1 bg-slate-900 text-white text-xs font-black rounded-lg">
-                      Q {q.questionId}
-                    </span>
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
-                      <span>Max Marks:</span>
-                      <input
-                        type="number"
-                        min="0.5"
-                        step="0.5"
-                        value={q.maxMarks || ''}
-                        onChange={(e) => handleQuestionChange(qIdx, 'maxMarks', parseFloat(e.target.value) || 0)}
-                        className={`w-16 px-2 py-1 text-center font-black rounded-lg border focus:outline-none text-xs ${
-                          q.maxMarks <= 0 ? 'border-red-500 bg-red-50 text-red-700' : 'border-slate-200'
-                        }`}
-                        placeholder="Marks"
-                      />
-                    </div>
-                  </div>
+        {/* Validation / Notice Banners */}
+        {errorMsg && (
+          <div className="bg-red-50 border-b border-red-200 px-6 py-2.5 flex items-center gap-2 text-xs text-red-700 font-bold">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+        {saveStatus && (
+          <div className="bg-emerald-50 border-b border-emerald-200 px-6 py-2.5 flex items-center gap-2 text-xs text-emerald-800 font-bold">
+            <CheckCircle className="w-4 h-4 shrink-0 text-emerald-600" />
+            <span>{saveStatus}</span>
+          </div>
+        )}
+        {validationErrors.length > 0 && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center gap-2 text-xs text-amber-800 font-medium">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+            <span>
+              <strong>Validation Notice:</strong> {validationErrors[0]}
+              {validationErrors.length > 1 && ` (+${validationErrors.length - 1} more issues)`}
+            </span>
+          </div>
+        )}
 
+        {/* Workspace Body: Split View */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Left Pane: PDF Document Viewer */}
+          {(viewMode === 'split' || viewMode === 'doc_only') && (
+            <div className={`p-4 bg-slate-900 ${viewMode === 'split' ? 'w-full md:w-1/2 border-r border-slate-200' : 'w-full'} flex flex-col`}>
+              <ExamDocViewer
+                answerKey={editedKey}
+                questionPaperFile={questionPaperFile}
+                answerKeyFile={answerKeyFile}
+                className="h-full"
+              />
+            </div>
+          )}
+
+          {/* Right Pane: Structured Answer Key Editor */}
+          {(viewMode === 'split' || viewMode === 'editor_only') && (
+            <div className={`flex-1 flex flex-col bg-slate-50 overflow-hidden ${viewMode === 'split' ? 'w-full md:w-1/2' : 'w-full'}`}>
+              {/* Question Filter & Actions Bar */}
+              <div className="bg-white px-6 py-3 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black uppercase tracking-wider text-slate-400">Filter:</span>
                   <button
-                    onClick={() => handleRemoveQuestion(qIdx)}
-                    className="p-1.5 text-slate-300 hover:text-red-500 transition-colors rounded-lg cursor-pointer"
-                    title="Remove question"
+                    type="button"
+                    onClick={() => setActiveFilter('all')}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      activeFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
                   >
-                    <Trash2 className="w-4 h-4" />
+                    All ({questions.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveFilter('flagged')}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      activeFilter === 'flagged' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Needs Review ({flaggedCount})
                   </button>
                 </div>
 
-                {/* Flagged Issue Warning */}
-                {q.flaggedIssue && (
-                  <div className="bg-orange-100/70 border border-orange-200 text-orange-800 text-xs px-3 py-2 rounded-xl mb-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-orange-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold">Flagged for review:</span> {q.flaggedIssue}
-                    </div>
-                  </div>
-                )}
-
-                {/* Question Prompt / Text */}
-                {q.questionText !== undefined && (
-                  <div className="mb-3">
-                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
-                      Question Text (Optional)
-                    </label>
-                    <input
-                      type="text"
-                      value={q.questionText || ''}
-                      onChange={(e) => handleQuestionChange(qIdx, 'questionText', e.target.value)}
-                      className="w-full text-xs text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 focus:outline-none focus:border-blue-500"
-                      placeholder="Prompt text as printed on question paper"
-                    />
-                  </div>
-                )}
-
-                {/* Model / Reference Answer */}
-                <div className="mb-3">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
-                    Standard Reference / Model Answer
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={q.referenceAnswer}
-                    onChange={(e) => handleQuestionChange(qIdx, 'referenceAnswer', e.target.value)}
-                    className="w-full text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 bg-slate-50/50 leading-relaxed font-sans"
-                    placeholder="Enter the official or suggested model answer..."
-                  />
-                </div>
-
-                {/* Concepts & Marking Criteria Grid */}
-                <div className="grid md:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
-                  {/* Expected Concepts */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                        Expected Answer Concepts
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleAddConcept(qIdx)}
-                        className="text-[10px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
-                      >
-                        + Add Concept
-                      </button>
-                    </div>
-                    <div className="space-y-1.5">
-                      {(q.expectedConcepts || []).map((concept, cIdx) => (
-                        <div key={cIdx} className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={concept}
-                            onChange={(e) => handleConceptChange(qIdx, cIdx, e.target.value)}
-                            className="flex-1 text-xs px-2.5 py-1 rounded-lg border border-slate-200 focus:outline-none focus:border-blue-500 bg-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveConcept(qIdx, cIdx)}
-                            className="text-slate-300 hover:text-red-500 p-1 cursor-pointer"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Marking Criteria */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                        Marking Rubric (Partial Credit)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleAddCriteria(qIdx)}
-                        className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 cursor-pointer"
-                      >
-                        + Add Rubric Point
-                      </button>
-                    </div>
-                    <div className="space-y-1.5">
-                      {(q.markingCriteria || []).map((criterion, crIdx) => (
-                        <div key={crIdx} className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={criterion}
-                            onChange={(e) => handleCriteriaChange(qIdx, crIdx, e.target.value)}
-                            className="flex-1 text-xs px-2.5 py-1 rounded-lg border border-slate-200 focus:outline-none focus:border-emerald-500 bg-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveCriteria(qIdx, crIdx)}
-                            className="text-slate-300 hover:text-red-500 p-1 cursor-pointer"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
+                <button
+                  type="button"
+                  onClick={handleAddQuestion}
+                  className="px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Question
+                </button>
               </div>
-            ))}
-          </div>
 
+              {/* Scrollable Questions List */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                {displayedQuestions.map((q, qIndex) => {
+                  const actualIndex = questions.findIndex((orig) => orig === q);
+                  const isFlagged = Boolean(q.flaggedIssue);
+                  const isInvalidMark = !Number.isFinite(Number(q.maxMarks)) || Number(q.maxMarks) <= 0;
+
+                  return (
+                    <div
+                      key={actualIndex}
+                      className={`bg-white rounded-2xl border p-5 shadow-sm transition-all ${
+                        isInvalidMark
+                          ? 'border-red-300 ring-2 ring-red-100'
+                          : isFlagged
+                          ? 'border-amber-300 ring-2 ring-amber-100'
+                          : 'border-slate-200'
+                      }`}
+                    >
+                      {/* Flagged Issue Alert */}
+                      {isFlagged && (
+                        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between text-xs text-amber-800">
+                          <div className="flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span><strong>Attention:</strong> {q.flaggedIssue}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleResolveFlag(actualIndex)}
+                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-bold cursor-pointer shrink-0"
+                          >
+                            Mark Resolved
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Header Row: Q Number, Sub-Q, Max Marks, Delete */}
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 mb-4">
+                        <div className="sm:col-span-3">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                            Question ID *
+                          </label>
+                          <input
+                            type="text"
+                            value={q.questionId}
+                            onChange={(e) => handleQuestionChange(actualIndex, 'questionId', e.target.value)}
+                            className="w-full text-xs font-bold text-slate-900 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
+                            placeholder="e.g. 1 or 2.a"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                            Subquestion ID
+                          </label>
+                          <input
+                            type="text"
+                            value={q.subquestionId || ''}
+                            onChange={(e) => handleQuestionChange(actualIndex, 'subquestionId', e.target.value)}
+                            className="w-full text-xs font-bold text-slate-900 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
+                            placeholder="e.g. a or b"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                            Max Marks * {isInvalidMark && <span className="text-red-500">(Required &gt; 0)</span>}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            value={q.maxMarks || ''}
+                            onChange={(e) => handleQuestionChange(actualIndex, 'maxMarks', parseFloat(e.target.value) || 0)}
+                            className={`w-full text-xs font-bold px-3 py-2 rounded-xl border focus:outline-none ${
+                              isInvalidMark
+                                ? 'border-red-400 bg-red-50/50 text-red-900'
+                                : 'border-slate-200 text-slate-900 focus:border-blue-500'
+                            }`}
+                            placeholder="e.g. 10"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2 flex items-end justify-end">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveQuestion(actualIndex)}
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all cursor-pointer"
+                            title="Remove Question"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Question Text */}
+                      <div className="mb-4">
+                        <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                          Question Prompt / Syllabus Text
+                        </label>
+                        <input
+                          type="text"
+                          value={q.questionText || ''}
+                          onChange={(e) => handleQuestionChange(actualIndex, 'questionText', e.target.value)}
+                          className="w-full text-xs font-medium text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
+                          placeholder="e.g. Describe the origin, course, relations and branches of median nerve in forearm."
+                        />
+                      </div>
+
+                      {/* Reference Answer */}
+                      <div className="mb-4">
+                        <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                          Authoritative Reference / Model Answer *
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={q.referenceAnswer}
+                          onChange={(e) => handleQuestionChange(actualIndex, 'referenceAnswer', e.target.value)}
+                          className="w-full text-xs font-medium text-slate-800 p-3 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 leading-relaxed font-sans"
+                          placeholder="Provide the complete standard answer expected from the student..."
+                        />
+                      </div>
+
+                      {/* Expected Key Concepts */}
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                            Key Concepts & Medical Terms Required
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => handleAddConcept(actualIndex)}
+                            className="text-[11px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" /> Add Concept
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {(q.expectedConcepts || []).map((concept, cIdx) => (
+                            <div
+                              key={cIdx}
+                              className="flex items-center gap-1.5 bg-blue-50 text-blue-900 px-2.5 py-1 rounded-lg border border-blue-200 text-xs font-medium"
+                            >
+                              <input
+                                type="text"
+                                value={concept}
+                                onChange={(e) => handleConceptChange(actualIndex, cIdx, e.target.value)}
+                                className="bg-transparent border-none text-xs text-blue-900 focus:outline-none font-medium"
+                                style={{ width: `${Math.max(concept.length * 8, 80)}px` }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveConcept(actualIndex, cIdx)}
+                                className="text-blue-400 hover:text-blue-700 cursor-pointer"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                          {(q.expectedConcepts || []).length === 0 && (
+                            <span className="text-xs text-slate-400 italic">No concepts specified. Click Add Concept above.</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Marking Criteria (Rubric Points) */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                            Partial Credit Marking Scheme & Rubrics
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => handleAddCriteria(actualIndex)}
+                            className="text-[11px] font-bold text-emerald-600 hover:text-emerald-800 flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" /> Add Rubric Point
+                          </button>
+                        </div>
+                        <div className="space-y-1.5">
+                          {(q.markingCriteria || []).map((crit, crIdx) => (
+                            <div key={crIdx} className="flex items-center gap-2">
+                              <span className="w-4 h-4 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex items-center justify-center shrink-0">
+                                {crIdx + 1}
+                              </span>
+                              <input
+                                type="text"
+                                value={crit}
+                                onChange={(e) => handleCriteriaChange(actualIndex, crIdx, e.target.value)}
+                                className="flex-1 text-xs text-slate-800 px-3 py-1.5 rounded-lg border border-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
+                                placeholder="e.g. Award 2 marks for boundaries, 3 marks for branches..."
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCriteria(actualIndex, crIdx)}
+                                className="text-slate-400 hover:text-red-600 p-1 cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Footer Actions */}
-        <div className="p-6 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-4">
-          <div className="text-xs text-slate-500 font-medium">
-            {editedKey.status === 'approved' ? (
-              <span className="text-emerald-700 font-bold flex items-center gap-1">
-                <Check className="w-3.5 h-3.5" /> Approved by instructor. Ready to evaluate student scripts.
-              </span>
+        {/* Footer Actions Bar */}
+        <div className="bg-white px-6 py-4 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4 shrink-0">
+          <div className="flex items-center gap-2">
+            {isValidForApproval ? (
+              <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                <CheckCircle className="w-4 h-4 text-emerald-600" />
+                <span>Validation passed: {questions.length} questions • Total {calculatedTotal} Marks</span>
+              </div>
             ) : (
-              <span className="text-amber-700 font-bold flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5" /> Key is unapproved. Grading pipeline requires approval.
-              </span>
+              <div className="flex items-center gap-1.5 text-xs font-bold text-red-600">
+                <AlertCircle className="w-4 h-4 text-red-600" />
+                <span>Fix validation errors before approving: {validationErrors[0]}</span>
+              </div>
             )}
           </div>
 
           <div className="flex items-center gap-3">
             <button
-              onClick={handleSaveInternal}
-              disabled={isLoading}
-              className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+              type="button"
+              onClick={onClose}
+              disabled={isSaving || isApproving}
+              className="px-4 py-2.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl text-xs font-bold transition-all cursor-pointer"
             >
-              <Save className="w-3.5 h-3.5" />
-              Save Draft
+              Cancel
             </button>
 
             <button
-              onClick={handleApproveInternal}
-              disabled={isLoading}
-              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-1.5 cursor-pointer hover:-translate-y-0.5"
+              type="button"
+              onClick={handleSaveOnly}
+              disabled={isSaving || isApproving}
+              className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
             >
-              <ShieldCheck className="w-4 h-4" />
-              Approve Answer Key
+              {isSaving ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-slate-700 border-t-transparent rounded-full animate-spin"></div>
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Draft</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleApproveKey}
+              disabled={!isValidForApproval || isApproving || isSaving}
+              className={`px-6 py-2.5 rounded-xl text-xs font-black shadow-md transition-all flex items-center gap-2 cursor-pointer ${
+                !isValidForApproval || isApproving || isSaving
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+              }`}
+            >
+              {isApproving ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  <span>Approving Key...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Validate & Approve Answer Key</span>
+                </>
+              )}
             </button>
           </div>
         </div>
-
       </div>
     </div>
   );

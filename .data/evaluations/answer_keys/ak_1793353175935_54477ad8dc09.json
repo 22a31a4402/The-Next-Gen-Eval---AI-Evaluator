@@ -1,0 +1,39 @@
+{
+  "id": "ak_1793353175935_54477ad8dc09",
+  "examId": "exam_1793353175938",
+  "title": "Unspecified Marks Exam",
+  "sourceMode": "ai_generated",
+  "version": 1,
+  "status": "needs_review",
+  "totalMaxMarks": 0,
+  "questions": [
+    {
+      "questionId": "1",
+      "maxMarks": 0,
+      "referenceAnswer": "Model answer without known marks",
+      "expectedConcepts": [
+        "Concept 1"
+      ],
+      "acceptableAlternatives": [],
+      "markingCriteria": [],
+      "diagramReferences": [],
+      "confidence": 0.9,
+      "flaggedIssue": "Missing maximum marks in question paper - instructor review required"
+    }
+  ],
+  "warnings": [
+    "Question 1: Missing marks in prompt.",
+    "Question 1: Missing explicit maximum marks."
+  ],
+  "metadata": {
+    "institutionId": "inst_aarshiv_1793353175925",
+    "createdBy": "prof_sharma_1793353175925",
+    "createdAt": 1793353175938,
+    "updatedAt": 1793353175938,
+    "sourceDocName": "QP_No_Marks.pdf"
+  },
+  "sourceQuestionPaperDoc": {
+    "name": "QP_No_Marks.pdf",
+    "text": "Explain cell structure."
+  }
+}

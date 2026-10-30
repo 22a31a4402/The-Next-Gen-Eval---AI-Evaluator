@@ -99,12 +99,15 @@ answerKeysRouter.post('/extract', async (req: Request, res: Response): Promise<v
       return;
     }
 
-    if (questionPaperDoc) {
-      const qpErr = validateDoc(questionPaperDoc, 'questionPaperDoc');
-      if (qpErr) {
-        res.status(400).json({ error: qpErr });
-        return;
-      }
+    if (!questionPaperDoc) {
+      res.status(400).json({ error: 'questionPaperDoc is required in Mode 2 for cross-referencing and verification.' });
+      return;
+    }
+
+    const qpErr = validateDoc(questionPaperDoc, 'questionPaperDoc');
+    if (qpErr) {
+      res.status(400).json({ error: qpErr });
+      return;
     }
 
     const key = await answerKeyService.extractFromUploadedKey({

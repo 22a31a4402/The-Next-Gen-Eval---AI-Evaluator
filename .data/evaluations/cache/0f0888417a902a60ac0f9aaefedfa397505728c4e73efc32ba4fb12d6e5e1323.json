@@ -1,0 +1,59 @@
+{
+  "cacheKey": "0f0888417a902a60ac0f9aaefedfa397505728c4e73efc32ba4fb12d6e5e1323",
+  "report": {
+    "studentName": "Legacy Student",
+    "testTitle": "Legacy Assessment",
+    "testTopics": "Biology",
+    "testDate": "2026-10-29",
+    "totalScore": 10,
+    "maxScore": 10,
+    "questions": [
+      {
+        "qNo": "1",
+        "marks": 10,
+        "maxMarks": 10,
+        "isCorrect": true,
+        "feedbackPoints": [
+          "Correct."
+        ],
+        "isFlagged": false
+      }
+    ],
+    "generalFeedback": {
+      "overallPerformance": [
+        "Passed."
+      ],
+      "mcqs": [
+        "Objective questions evaluated."
+      ],
+      "contentAccuracy": [
+        "Accurate."
+      ],
+      "completenessOfAnswers": [
+        "Complete."
+      ],
+      "presentationDiagrams": [
+        "Presentation and structure reviewed."
+      ],
+      "investigations": [
+        "Methodology steps reviewed."
+      ],
+      "attemptingQuestions": [
+        "Attempted."
+      ],
+      "actionPoints": [
+        "Good."
+      ]
+    },
+    "evaluatedByModel": "gemini-3.8-flash",
+    "id": "89503797-1ac2-4b96-98f1-d226fb4e6187",
+    "timestamp": 1793350808584
+  },
+  "timestamp": 1793350808584,
+  "modelUsed": "gemini-3.8-flash",
+  "inputTokens": 2000,
+  "outputTokens": 300,
+  "estimatedCostSaved": 0.00032,
+  "institutionId": "inst_aarshiv_1793350797796",
+  "createdBy": "prof_sharma_1793350797796"
+}

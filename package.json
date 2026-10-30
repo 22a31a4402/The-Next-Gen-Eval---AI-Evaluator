@@ -9,7 +9,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test": "tsx test/test_pipeline.ts"
+    "test": "tsx test/test_pipeline.ts",
+    "test:benchmark": "tsx test/benchmark.ts",
+    "test:audit": "tsx test/audit_verification.ts"
   },
   "dependencies": {
     "@google/genai": "^1.40.0",

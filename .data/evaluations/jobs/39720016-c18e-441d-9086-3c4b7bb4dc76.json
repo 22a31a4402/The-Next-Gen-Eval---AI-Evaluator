@@ -1,0 +1,34 @@
+{
+  "id": "39720016-c18e-441d-9086-3c4b7bb4dc76",
+  "correlationId": "eval_1793350864667_162f9763",
+  "status": "queued",
+  "progressPercent": 0,
+  "currentStepMessage": "Job queued for evaluation",
+  "mode": "without-manual",
+  "studentName": "Legacy Student",
+  "testTitle": "Academic Assessment",
+  "institutionId": "inst_aarshiv_1793350853307",
+  "createdBy": "prof_sharma_1793350853307",
+  "createdAt": 1793350864667,
+  "updatedAt": 1793350864667,
+  "metrics": {
+    "correlationId": "eval_1793350864667_162f9763",
+    "startTime": 1793350864667,
+    "cacheHit": false,
+    "retriesCount": 0
+  },
+  "inputPayload": {
+    "sourceDoc": {
+      "name": "Legacy_Student.pdf",
+      "text": "Legacy script"
+    },
+    "questionPaper": {
+      "name": "QP_Legacy.pdf",
+      "text": "Q1. Explain cell (10 marks)."
+    },
+    "answerKey": {
+      "name": "AK_Legacy.pdf",
+      "text": "Q1. Cell is basic structural unit (10 marks)."
+    }
+  }
+}
