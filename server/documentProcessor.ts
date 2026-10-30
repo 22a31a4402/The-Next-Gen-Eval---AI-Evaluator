@@ -15,14 +15,58 @@ export interface PreparedEvaluationInput {
   studentName: string;
 }
 
+/**
+ * Evaluates whether extracted text is sufficient or if visual evidence (base64) must be retained.
+ * Subject-independent: does not assume or privilege any particular academic discipline.
+ *
+ * Rules:
+ * - If base64 is not provided, returns false (only text is available).
+ * - If hasVisualElements is explicitly flagged, returns true.
+ * - If text is missing or shorter than 50 characters, text extraction is deemed insufficient -> returns true.
+ * - If text contains patterns that plaintext cannot faithfully represent
+ *   (mathematical symbols/equations, diagrams, figures, charts, circuits, flowcharts,
+ *    chemical structures/reaction arrows, program code blocks, structured tables/ledgers,
+ *    or scanned/handwriting indicators), returns true so visual evidence is preserved.
+ * - Otherwise (clean, complete, well-formed typed text without complex non-textual notation),
+ *   extracted text is sufficient -> returns false.
+ */
+export function isVisualEvidenceNeeded(doc?: {
+  name?: string;
+  text?: string;
+  base64?: string;
+  mimeType?: string;
+  hasVisualElements?: boolean;
+}): boolean {
+  if (!doc || !doc.base64) return false;
+  if (doc.hasVisualElements) return true;
+  const text = doc.text ? doc.text.trim() : '';
+  if (text.length < 50) return true;
+
+  const visualPatterns = [
+    /\b(fig|figure|diagram|chart|graph|flowchart|circuit|schematic|illustrat\w*|sketch|plot|map|blueprint)\b/i,
+    /(\[fig|\(fig|see fig|shown in fig|refer to fig|table\s+\d+)/i,
+    /(\\frac|\\int|\\sum|\\sqrt|\\matrix|\\partial|\\alpha|\\beta|\\gamma|\\theta|\\lambda|\\sigma|\\Delta|\\nabla|\\[\\[.*?\\]\\])/i,
+    /\b(matrix|matrices|determinant|eigenvalue|eigenvector)\b/i,
+    /[∫∑√∂∏≠≈≤≥±×÷∞∈∉⊂⊆∪∩∧∨¬⇒⇔]/,
+    /(->|-->|=>|==>|⇄|⇌|⟶|←)/,
+    /\b(chemical equation|reaction mechanism|mechanism|nucleophilic|electrophilic|stereochemistry|conformation|structural formula|benzene|reagent|stoichiometry|resonance)\b/i,
+    /\b(def |class |function\s*\(|int main|#include|public static void|SELECT\s+.*FROM)\b/,
+    /(\|[\s\S]*\|[\s\S]*\|)/,
+    /\b(balance sheet|ledger account|debit|credit|journal entry|t-account)\b/i,
+    /\b(handwritten|handwriting|scanned document|drawn|illustrated)\b/i,
+  ];
+
+  return visualPatterns.some((pattern) => pattern.test(text));
+}
+
 export class DocumentProcessor {
   /**
    * Builds an optimized multimodal parts array for Gemini
    */
   public prepareInput(payload: {
-    sourceDoc: { name: string; text?: string; base64?: string; mimeType?: string };
-    questionPaper?: { name: string; text?: string; base64?: string; mimeType?: string };
-    answerKey?: { name: string; text?: string; base64?: string; mimeType?: string };
+    sourceDoc: { name: string; text?: string; base64?: string; mimeType?: string; hasVisualElements?: boolean };
+    questionPaper?: { name: string; text?: string; base64?: string; mimeType?: string; hasVisualElements?: boolean };
+    answerKey?: { name: string; text?: string; base64?: string; mimeType?: string; hasVisualElements?: boolean };
     canonicalAnswerKey?: CanonicalAnswerKey;
     facultyNotes?: { name: string; text?: string; base64?: string; mimeType?: string } | null;
     mode: EvaluationMode;
@@ -36,19 +80,27 @@ export class DocumentProcessor {
     // If canonical answer key is present, question text & max marks are already structured in it.
     // Avoid re-transmitting heavy visual question papers per student script.
     if (payload.questionPaper && !payload.canonicalAnswerKey) {
-      if (payload.questionPaper.text && payload.questionPaper.text.trim().length > 30) {
-        // High density text available: use pure text to save tokens & latency
-        qpSection += `--- OFFICIAL QUESTION PAPER ---\n${payload.questionPaper.text.trim()}\n\n`;
-      } else if (payload.questionPaper.base64 && payload.questionPaper.mimeType) {
-        // Visual/scanned question paper
-        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)` });
-        contentsParts.push({
-          inlineData: {
-            data: payload.questionPaper.base64,
-            mimeType: payload.questionPaper.mimeType,
-          },
-        });
-        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL QUESTION PAPER` });
+      const qp = payload.questionPaper;
+      const qpText = qp.text ? qp.text.trim() : '';
+      const textSufficient = qpText.length >= 50 && !isVisualEvidenceNeeded(qp);
+
+      if (textSufficient) {
+        // High density text available and sufficient: use pure text to save tokens & latency
+        qpSection += `--- OFFICIAL QUESTION PAPER ---\n${qpText}\n\n`;
+      } else {
+        if (qpText) {
+          qpSection += `--- OFFICIAL QUESTION PAPER (Extracted Text Index) ---\n${qpText}\n\n`;
+        }
+        if (qp.base64 && qp.mimeType) {
+          contentsParts.push({ text: `DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)` });
+          contentsParts.push({
+            inlineData: {
+              data: qp.base64,
+              mimeType: qp.mimeType,
+            },
+          });
+          contentsParts.push({ text: `DOCUMENT_END: OFFICIAL QUESTION PAPER` });
+        }
       }
     } else if (payload.questionPaper && payload.canonicalAnswerKey && payload.questionPaper.text) {
       // Include lightweight text overview if available
@@ -84,7 +136,7 @@ export class DocumentProcessor {
         akSection += '\n';
       }
 
-      // Only attach visual answer key document if a question explicitly needs visual diagram verification
+      // Attach visual answer key document if a question explicitly needs visual diagram verification
       if (hasDiagramRef && ak.sourceAnswerKeyDoc?.base64 && ak.sourceAnswerKeyDoc?.mimeType) {
         contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual Reference for Diagrams)` });
         contentsParts.push({
@@ -96,24 +148,33 @@ export class DocumentProcessor {
         contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY (Visual Reference for Diagrams)` });
       }
     } else if (payload.answerKey) {
-      if (payload.answerKey.text && payload.answerKey.text.trim().length > 30) {
-        akSection += `--- OFFICIAL ANSWER KEY (THE ABSOLUTE ACADEMIC TRUTH) ---\n${payload.answerKey.text.trim()}\n\n`;
-      } else if (payload.answerKey.base64 && payload.answerKey.mimeType) {
-        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual)` });
-        contentsParts.push({
-          inlineData: {
-            data: payload.answerKey.base64,
-            mimeType: payload.answerKey.mimeType,
-          },
-        });
-        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY` });
+      const ak = payload.answerKey;
+      const akText = ak.text ? ak.text.trim() : '';
+      const textSufficient = akText.length >= 50 && !isVisualEvidenceNeeded(ak);
+
+      if (textSufficient) {
+        akSection += `--- OFFICIAL ANSWER KEY (THE ABSOLUTE ACADEMIC TRUTH) ---\n${akText}\n\n`;
+      } else {
+        if (akText) {
+          akSection += `--- OFFICIAL ANSWER KEY (Extracted Text Index) ---\n${akText}\n\n`;
+        }
+        if (ak.base64 && ak.mimeType) {
+          contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual)` });
+          contentsParts.push({
+            inlineData: {
+              data: ak.base64,
+              mimeType: ak.mimeType,
+            },
+          });
+          contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY` });
+        }
       }
     }
 
     // 3. Prepare Student Answer Sheet
-    // Student answer sheets often contain handwriting, mathematical steps, derivations, and diagrams.
-    // If base64 is available, send visual input so handwriting/diagrams can be accurately inspected.
-    // Also include any recognized text for fast indexing.
+    // Student answer sheets contain handwriting, mathematical steps, derivations, code, and diagrams.
+    // Retain visual multimodal data whenever base64 is available so handwriting, spatial layout,
+    // working steps, and subject-specific drawings can be evaluated faithfully across all academic disciplines.
     let studentText = payload.sourceDoc.text ? payload.sourceDoc.text.trim() : '';
     
     // Combine text headers
@@ -165,8 +226,8 @@ export class DocumentProcessor {
       text: `Perform the academic evaluation now. Active Mode: ${payload.mode}.
 Follow the evaluation workflow strictly:
 1. Extract exact question numbers and their exact maximum marks (maxMarks) from the Question Paper / Answer Key.
-2. Evaluate student answers against the criteria. Award full marks for equivalent conceptual understanding, methods, and derivations.
-3. For questions requiring diagrams or formulas, inspect the visual script.
+2. Evaluate student answers against the criteria. Award full marks for equivalent conceptual understanding, methods, code, and derivations.
+3. For questions requiring diagrams, charts, circuits, or formulas, inspect the visual script.
 4. Total score MUST equal the exact mathematical sum of awarded question marks.
 5. Every question must have constructive feedback points.
 6. Generate the complete structured evaluation report JSON now.`,
@@ -205,17 +266,19 @@ Follow the evaluation workflow strictly:
 
     EVALUATION PHILOSOPHY & PRINCIPLES:
     1. SUBJECT-AGNOSTIC SOURCE OF TRUTH:
-       - You evaluate responses across all academic subjects (e.g., Mathematics, Physics, Chemistry, Biology, Computer Science, Engineering, Medicine, Management, Humanities, Social Sciences, etc.).
-       - Never assume any specific syllabus; the provided materials are the authoritative source of truth.
+       - You evaluate responses across all academic subjects (e.g., Mathematics, Physical Sciences, Chemical Sciences, Biological & Medical Sciences, Engineering, Computer Science, Commerce & Economics, Languages & Literature, Humanities & Social Sciences, etc.).
+       - Never assume any specific syllabus or discipline; the provided materials are the authoritative source of truth.
     2. ANSWER-KEY ALIGNMENT WITHOUT RIGID WORD-MATCHING:
        - Do NOT require students to reproduce the answer key word-for-word.
-       - Award full credit when a student uses different phrasing, equivalent terminology, provides a mathematically equivalent solution, applies a valid alternative method, or reaches the correct conclusion through sound reasoning.
+       - Award full credit when a student uses different phrasing, equivalent terminology, provides a mathematically equivalent solution, applies a valid alternative method, writes functionally correct code, or reaches the correct conclusion through sound reasoning.
     3. NO KEYWORD-ONLY CREDIT:
-       - Do not award marks merely for mentioning isolated buzzwords. Evaluate true comprehension and working.
-    4. GENERALIZED DIAGRAM, CALCULATION & CODE HANDLING:
-       - Inspect drawings, diagrams, circuits, flowcharts, equations, and code for correctness.
+       - Do not award marks merely for mentioning isolated buzzwords. Evaluate true comprehension, working, and derivations.
+    4. GENERALIZED DIAGRAM, CALCULATION, CODE & STRUCTURAL HANDLING:
+       - Inspect drawings, diagrams, circuits, flowcharts, chemical structures, equations, tables, and code for correctness.
        - If a question requires steps or derivations, evaluate intermediate steps.
-       - For numerical questions, verify intermediate steps and final answers.
+       - For numerical and mathematical questions, verify intermediate steps and final answers.
+       - For computer science and engineering questions, verify logic, syntax, data structures, and edge cases.
+       - For humanities and language questions, evaluate argument structure, textual evidence, analysis, and grammar.
     5. OBJECTIVE MARKING WITHOUT ARTIFICIAL CAPS:
        - Marks must strictly reflect actual performance up to maxMarks. Students MAY receive full marks if completely correct.
        - Award partial marks proportionally for partially correct answers.

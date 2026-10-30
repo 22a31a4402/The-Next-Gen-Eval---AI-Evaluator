@@ -64,7 +64,7 @@ export const PRICING_SCHEDULES: Record<string, PricingVersionConfig> = {
         inputPerMillion: 0.25,
         outputPerMillion: 1.00,
         cachedInputPerMillion: 0.0625,
-        notes: 'Deep reasoning & complex anatomical diagram model',
+        notes: 'Deep reasoning & complex visual diagram / STEM notation model',
       },
       'gemini-2.5-flash': {
         modelId: 'gemini-2.5-flash',

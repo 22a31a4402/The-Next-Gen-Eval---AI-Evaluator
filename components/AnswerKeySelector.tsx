@@ -41,10 +41,10 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
   fileToData,
 }) => {
   const [selectedMode, setSelectedMode] = useState<AnswerKeySourceMode>('ai_generated');
-  const [examTitle, setExamTitle] = useState('Anatomy & Physiology Assessment');
-  const [subject, setSubject] = useState('Anatomy');
-  const [grade, setGrade] = useState('MBBS Phase 1');
-  const [totalMarksInput, setTotalMarksInput] = useState<string>('50');
+  const [examTitle, setExamTitle] = useState('Academic Assessment');
+  const [subject, setSubject] = useState('');
+  const [grade, setGrade] = useState('');
+  const [totalMarksInput, setTotalMarksInput] = useState<string>('');
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
@@ -314,7 +314,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
                 value={examTitle}
                 onChange={(e) => setExamTitle(e.target.value)}
                 className="w-full text-xs font-bold text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
-                placeholder="e.g. Anatomy Semester Exam"
+                placeholder="e.g. Calculus / Data Structures / Chemistry / Economics"
               />
             </div>
             <div>
@@ -326,7 +326,7 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
                 className="w-full text-xs font-bold text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
-                placeholder="e.g. Human Anatomy"
+                placeholder="e.g. Mathematics / Computer Science / Sciences / Humanities"
               />
             </div>
             <div>

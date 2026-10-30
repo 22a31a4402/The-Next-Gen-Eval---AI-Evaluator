@@ -28,6 +28,7 @@ import {
 } from './types';
 import { UserContext } from './auth';
 import { callGeminiWithFallback } from './geminiClient';
+import { isVisualEvidenceNeeded } from './documentProcessor';
 import { config } from './config';
 
 export class AnswerKeyValidationError extends Error {
@@ -131,39 +132,61 @@ export class AnswerKeyService {
 
     // Assemble parts for Gemini
     const contentsParts: any[] = [];
-    if (questionPaper.text && questionPaper.text.trim().length > 30) {
+    const qpText = questionPaper.text ? questionPaper.text.trim() : '';
+    const textSufficient = qpText.length >= 50 && !isVisualEvidenceNeeded(questionPaper);
+
+    if (textSufficient) {
+      // Extracted text is comprehensive and sufficient: optimize token usage
       contentsParts.push({
-        text: `--- OFFICIAL QUESTION PAPER ---\n${questionPaper.text.trim()}\n\n`,
+        text: `--- OFFICIAL QUESTION PAPER ---\n${qpText}\n\n`,
       });
-    }
-    if (questionPaper.base64 && questionPaper.mimeType) {
-      contentsParts.push({ text: `DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)` });
-      contentsParts.push({
-        inlineData: {
-          data: questionPaper.base64,
-          mimeType: questionPaper.mimeType,
-        },
-      });
-      contentsParts.push({ text: `DOCUMENT_END: OFFICIAL QUESTION PAPER` });
+    } else {
+      // Text is insufficient, missing, or contains diagrams, math, chemistry, code, tables, or scanned content
+      if (qpText.length > 0) {
+        contentsParts.push({
+          text: `--- OFFICIAL QUESTION PAPER (Extracted Text Index) ---\n${qpText}\n\n`,
+        });
+      }
+      if (questionPaper.base64 && questionPaper.mimeType) {
+        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)` });
+        contentsParts.push({
+          inlineData: {
+            data: questionPaper.base64,
+            mimeType: questionPaper.mimeType,
+          },
+        });
+        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL QUESTION PAPER` });
+      }
     }
 
     contentsParts.push({
-      text: `TASK: Generate a comprehensive, structured Answer Key for this Question Paper.
+      text: `TASK: Generate a comprehensive, authoritative, structured Answer Key for this Question Paper.
 Exam Title: "${title}"
 ${subject ? `Subject: "${subject}"` : ''}
 ${grade ? `Grade / Academic Level: "${grade}"` : ''}
 ${totalMaxMarks ? `Target Total Marks: ${totalMaxMarks}` : ''}
+
+SUBJECT-INDEPENDENT REQUIREMENTS ACROSS ACADEMIC DISCIPLINES:
+- NextGen Eval supports question papers across mathematics, physical sciences, chemical sciences, biological & medical sciences, engineering, computer science, commerce, economics, languages, literature, humanities, and social sciences.
+- Do NOT make assumptions based on any particular subject. Model answers, expected concepts, alternative formulations, and marking rubrics must faithfully reflect the actual subject and question:
+  * Mathematics / Physics: Preserve mathematical notation, equations, calculus/algebraic derivations, step-by-step proofs, formulas, and numeric calculations. Provide criteria for partial credit on intermediate steps.
+  * Computer Science / Engineering: Preserve code snippets, algorithms, data structures, flowcharts, circuit schematics, logic gates, and edge cases. Award credit for functional correctness regardless of formatting.
+  * Chemistry: Preserve balanced chemical equations, stoichiometry, reaction mechanisms, molecular structures, reagents, and conditions.
+  * Commerce / Economics: Preserve ledger accounts, journal entries, balance sheet equations, supply/demand curve analysis, and financial formulas.
+  * Languages & Humanities: Preserve textual citations, thesis statements, thematic analysis, grammatical/linguistic standards, and structured essay points.
+  * Medicine & Life Sciences: Preserve physiological pathways, cellular mechanisms, terminology, and labelled illustrations.
 
 CRITICAL ACADEMIC INSTRUCTIONS:
 1. Extract ALL questions and subquestions hierarchically (e.g. "1", "2.a", "2.b", "3").
 2. Extract the exact explicit maximum marks (maxMarks) specified for each question.
    - If maximum marks are NOT explicitly provided in the question paper, set maxMarks to 0 or null and set flaggedIssue to "Missing maximum marks in question paper - instructor review required".
    - NEVER invent marks or default missing marks to 1!
-3. Provide a suggested comprehensive reference answer for each question.
+3. Provide a suggested comprehensive reference answer for each question, preserving subject-specific notation, equations, diagrams, tables, chemical structures, code, flowcharts, labelled illustrations, and descriptive text.
 4. Extract key expected answer concepts (essential points student must cover).
-5. Extract acceptable alternative answers or phrasing for fair grading.
+5. Extract acceptable alternative answers, methods, or equivalent formulations for fair grading.
 6. Formulate granular marking criteria for partial credit allocation.
-7. If any question has ambiguous wording, incomplete instructions, or missing information, flag it explicitly in flaggedIssue.
+7. If any question refers to or requires a diagram, chart, graph, table, flowchart, circuit, or illustration, list it in diagramReferences.
+8. If any question has ambiguous wording, incomplete instructions, or missing information, flag it explicitly in flaggedIssue.
 
 Return ONLY a valid JSON object matching this schema:
 {
@@ -189,8 +212,8 @@ Return ONLY a valid JSON object matching this schema:
     });
 
     const systemInstruction = `You are an expert academic curriculum and examination specialist for Aarshiv AI NextGen Eval.
-Your responsibility is to analyze question papers and generate authoritative, rigorous answer keys.
-You maintain absolute academic integrity: never fabricate missing marks, and always flag ambiguities for human instructor review.
+Your responsibility is to analyze question papers and generate authoritative, rigorous answer keys across all academic disciplines (Mathematics, Science, Medicine, Engineering, Computer Science, Commerce, Languages, Humanities, and other fields).
+You maintain absolute academic integrity: never fabricate missing marks, faithfully preserve subject-specific content and notation, and always flag ambiguities for human instructor review.
 Output must be strictly raw JSON with no Markdown wrapping.`;
 
     const geminiResult = await callGeminiWithFallback(
@@ -318,38 +341,56 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     const contentsParts: any[] = [];
 
     // Add Answer Key Document
-    if (answerKeyDoc.text && answerKeyDoc.text.trim().length > 30) {
+    const akText = answerKeyDoc.text ? answerKeyDoc.text.trim() : '';
+    const akTextSufficient = akText.length >= 50 && !isVisualEvidenceNeeded(answerKeyDoc);
+
+    if (akTextSufficient) {
       contentsParts.push({
-        text: `--- OFFICIAL UPLOADED ANSWER KEY DOCUMENT ---\n${answerKeyDoc.text.trim()}\n\n`,
+        text: `--- OFFICIAL UPLOADED ANSWER KEY DOCUMENT ---\n${akText}\n\n`,
       });
-    }
-    if (answerKeyDoc.base64 && answerKeyDoc.mimeType) {
-      contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual)` });
-      contentsParts.push({
-        inlineData: {
-          data: answerKeyDoc.base64,
-          mimeType: answerKeyDoc.mimeType,
-        },
-      });
-      contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY` });
+    } else {
+      if (akText.length > 0) {
+        contentsParts.push({
+          text: `--- OFFICIAL UPLOADED ANSWER KEY DOCUMENT (Extracted Text Index) ---\n${akText}\n\n`,
+        });
+      }
+      if (answerKeyDoc.base64 && answerKeyDoc.mimeType) {
+        contentsParts.push({ text: `DOCUMENT_START: OFFICIAL ANSWER KEY (Visual)` });
+        contentsParts.push({
+          inlineData: {
+            data: answerKeyDoc.base64,
+            mimeType: answerKeyDoc.mimeType,
+          },
+        });
+        contentsParts.push({ text: `DOCUMENT_END: OFFICIAL ANSWER KEY` });
+      }
     }
 
     // Add optional Question Paper for cross-referencing
     if (questionPaperDoc) {
-      if (questionPaperDoc.text && questionPaperDoc.text.trim().length > 30) {
+      const qpRefText = questionPaperDoc.text ? questionPaperDoc.text.trim() : '';
+      const qpRefTextSufficient = qpRefText.length >= 50 && !isVisualEvidenceNeeded(questionPaperDoc);
+
+      if (qpRefTextSufficient) {
         contentsParts.push({
-          text: `--- REFERENCE QUESTION PAPER (FOR CROSS-VALIDATION) ---\n${questionPaperDoc.text.trim()}\n\n`,
+          text: `--- REFERENCE QUESTION PAPER (FOR CROSS-VALIDATION) ---\n${qpRefText}\n\n`,
         });
-      }
-      if (questionPaperDoc.base64 && questionPaperDoc.mimeType) {
-        contentsParts.push({ text: `DOCUMENT_START: REFERENCE QUESTION PAPER (Visual)` });
-        contentsParts.push({
-          inlineData: {
-            data: questionPaperDoc.base64,
-            mimeType: questionPaperDoc.mimeType,
-          },
-        });
-        contentsParts.push({ text: `DOCUMENT_END: REFERENCE QUESTION PAPER` });
+      } else {
+        if (qpRefText.length > 0) {
+          contentsParts.push({
+            text: `--- REFERENCE QUESTION PAPER (Extracted Text Index) ---\n${qpRefText}\n\n`,
+          });
+        }
+        if (questionPaperDoc.base64 && questionPaperDoc.mimeType) {
+          contentsParts.push({ text: `DOCUMENT_START: REFERENCE QUESTION PAPER (Visual)` });
+          contentsParts.push({
+            inlineData: {
+              data: questionPaperDoc.base64,
+              mimeType: questionPaperDoc.mimeType,
+            },
+          });
+          contentsParts.push({ text: `DOCUMENT_END: REFERENCE QUESTION PAPER` });
+        }
       }
     }
 
@@ -361,16 +402,22 @@ ${grade ? `Grade / Academic Level: "${grade}"` : ''}
 ${totalMaxMarks ? `Target Total Marks: ${totalMaxMarks}` : ''}
 ${questionPaperDoc ? 'NOTE: A question paper was provided. Cross-reference every question number between the Question Paper and the Answer Key!' : ''}
 
+SUBJECT-INDEPENDENT REQUIREMENTS ACROSS ACADEMIC DISCIPLINES:
+- NextGen Eval supports question papers across mathematics, physical sciences, chemical sciences, biological & medical sciences, engineering, computer science, commerce, economics, languages, literature, humanities, and social sciences.
+- Preserve subject-specific content including mathematical notation, equations, diagrams, tables, chemical structures, code, flowcharts, labelled illustrations, and descriptive text.
+- Do NOT make assumptions based on a particular subject.
+
 CRITICAL EXTRACTION & VALIDATION RULES:
 1. Extract question numbering, subquestions, and sections exactly as defined.
-2. Extract the model answer / reference solution for each question.
+2. Extract the model answer / reference solution for each question with complete technical depth.
 3. Extract maximum marks for each question. If missing, set maxMarks to 0 and flag in flaggedIssue.
-4. Extract expected answer concepts, acceptable alternatives, and marking rubric points.
-5. If Question Paper was provided:
+4. Extract expected answer concepts, acceptable alternatives, and marking rubric points reflecting the actual question and subject.
+5. If any question requires or references a diagram, graph, table, flowchart, circuit, or illustration, record it in diagramReferences.
+6. If Question Paper was provided:
    - Identify any questions present in the Question Paper but MISSING from the Answer Key!
    - Identify any question numbering mismatches.
    - If a question is missing an answer or has conflicting numbering, set flaggedIssue with detailed explanation.
-6. If any mark allocations are ambiguous or split unclearly, flag them in flaggedIssue.
+7. If any mark allocations are ambiguous or split unclearly, flag them in flaggedIssue.
 
 Return ONLY a valid JSON object matching this schema:
 {
@@ -396,7 +443,8 @@ Return ONLY a valid JSON object matching this schema:
     });
 
     const systemInstruction = `You are an expert academic curriculum parsing specialist for Aarshiv AI NextGen Eval.
-Extract and validate structured answer keys with high fidelity.
+Extract and validate structured answer keys with high fidelity across all academic disciplines.
+Faithfully preserve mathematical notation, equations, diagrams, tables, chemical structures, code, flowcharts, labelled illustrations, and descriptive text.
 Flag missing answers, missing marks, or question number discrepancies honestly.
 Output must be strictly raw JSON with no Markdown wrapping.`;
 

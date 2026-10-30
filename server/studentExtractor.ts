@@ -115,25 +115,25 @@ ${JSON.stringify(expectedQuestionsSummary, null, 2)}
 
     // 3. Extraction Instructions
     contentsParts.push({
-      text: `Perform Stage 1 Extraction of the student's written/printed answer sheet.
+      text: `Perform Stage 1 Extraction of the student's written/printed answer sheet across academic disciplines.
 Task:
 1. Extract student answers question by question matching the Expected Questions list.
 2. For each question:
    - Identify questionId (e.g. "1", "2.a", "2.b")
    - If the student attempted the question, extract verbatim studentAnswerText and set isAttempted: true.
    - If the student skipped or omitted the question, set isAttempted: false and studentAnswerText: "[Not Attempted]".
-   - If the student drew any anatomical/scientific diagram, chart, or graph, provide an objective, detailed diagramDescription describing what was drawn, labels, and arrows.
-   - If the student wrote mathematical steps or chemical formulas, list them in formulas array.
+   - If the student drew any diagram, flowchart, chart, graph, circuit schematic, chemical structure, geometry figure, table, or illustration, provide an objective, detailed diagramDescription describing what was drawn, labels, components, connections, values, and arrows.
+   - If the student wrote mathematical derivations, calculus/algebraic steps, or chemical equations, list them in formulas array.
    - If the handwriting is ambiguous, faint, scratched out, or difficult to decipher, DO NOT GUESS OR FABRICATE! Set flaggedUncertain: true and describe the ambiguity in flaggedIssue.
    - Provide confidence score (0.0 to 1.0).
-3. If visual diagrams or hand-drawn sketches are present, set visualEvidenceRetained: true so visual proof is preserved for grading.
+3. If visual diagrams, drawings, equations, code blocks, tables, or hand-drawn sketches are present, or whenever text extraction cannot faithfully represent the original content, set visualEvidenceRetained: true so visual proof is preserved for grading.
 
 Return ONLY a valid JSON object matching the studentExtractionSchema.`,
     });
 
-    const systemInstruction = `You are a high-precision academic handwriting extraction specialist for Aarshiv AI NextGen Eval.
-Extract student responses with total fidelity.
-Preserve formulas, anatomical diagrams, and notation.
+    const systemInstruction = `You are a high-precision academic script extraction specialist for Aarshiv AI NextGen Eval.
+Extract student responses across all academic disciplines (Mathematics, Science, Medicine, Engineering, Computer Science, Commerce, Languages, Humanities) with total fidelity.
+Preserve subject-specific content including mathematical notation, equations, diagrams, tables, chemical structures, code, flowcharts, labelled illustrations, and descriptive text.
 Flag unreadable or uncertain answers honestly.
 NEVER fabricate missing answers or synthetic scores.`;
 

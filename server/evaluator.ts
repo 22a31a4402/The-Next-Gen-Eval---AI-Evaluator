@@ -546,17 +546,19 @@ Evaluate each question question-by-question:
 1. Compare studentAnswerText against referenceAnswer, expectedConcepts, and acceptableAlternatives.
 2. Award marks based on markingCriteria with partial credit.
 3. If isAttempted is false, award 0 marks and note "Question not attempted" in feedbackPoints.
-4. If a diagram was drawn (see diagramDescription or visual script), evaluate anatomical/scientific accuracy and award diagram marks accordingly.
-5. Deductions: Explain any deductions clearly with constructive feedback points.
-6. CRITICAL ACADEMIC BOUNDS:
+4. If a diagram, flowchart, circuit, chemical structure, mathematical derivation, code snippet, or illustration was provided (see diagramDescription or visual script), evaluate its subject-specific accuracy, correctness, labeling, steps, and structure, and award marks accordingly.
+5. Award full marks for valid alternative solutions, equivalent mathematical derivations, functionally correct code, or equivalent terminology across all academic disciplines.
+6. Deductions: Explain any deductions clearly with constructive feedback points.
+7. CRITICAL ACADEMIC BOUNDS:
    - Awarded marks must NEVER exceed the question's maxMarks.
    - Awarded marks must be non-negative (>= 0).
    - Total score MUST equal the exact mathematical sum of awarded question marks.
-7. Return ONLY a valid JSON object matching the EvaluationReport schema.`,
+8. Return ONLY a valid JSON object matching the EvaluationReport schema.`,
     });
 
     const systemInstruction = `You are a strict, fair, and thorough academic valuation expert for Aarshiv AI NextGen Eval.
-Evaluate extracted student responses against the canonical exam scheme.
+Evaluate extracted student responses across any academic discipline against the approved canonical exam scheme.
+Award credit for conceptual understanding, equivalent formulations, and valid working.
 Award partial credit strictly based on rubric criteria.
 Total score must equal the sum of awarded question marks.`;
 

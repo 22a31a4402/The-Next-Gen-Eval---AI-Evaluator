@@ -188,8 +188,8 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
       maxMarks: 5,
       referenceAnswer: 'Model answer for Question ' + nextQId,
       expectedConcepts: ['Key concept 1', 'Key concept 2'],
-      acceptableAlternatives: ['Alternative clinical description'],
-      markingCriteria: ['Award full marks for accurate definition', 'Award partial credit for relevant mechanisms'],
+      acceptableAlternatives: ['Acceptable equivalent formulation, method, or alternative phrasing'],
+      markingCriteria: ['Award full marks for complete solution or definition', 'Award partial credit for sound intermediate steps/working'],
     };
     const nextQuestions = [...questions, newQuestion];
     const newTotal = nextQuestions.reduce((acc, q) => acc + (Number(q.maxMarks) || 0), 0);
@@ -541,7 +541,7 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
                       <div className="mb-4">
                         <div className="flex items-center justify-between mb-1.5">
                           <label className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                            Key Concepts & Medical Terms Required
+                            Key Concepts & Core Terminology Required
                           </label>
                           <button
                             type="button"

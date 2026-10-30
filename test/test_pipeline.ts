@@ -54,8 +54,8 @@ import {
 } from '../server/pricing';
 import { usageLedger } from '../server/usageLedger';
 import { answerKeyService, AnswerKeyValidationError } from '../server/answerKeyService';
-import { CanonicalAnswerKey, CanonicalQuestionKey, StudentExtractedScript } from '../server/types';
-import { documentProcessor } from '../server/documentProcessor';
+import { CanonicalAnswerKey, CanonicalQuestionKey, StudentExtractedScript, EvaluationJob } from '../server/types';
+import { documentProcessor, isVisualEvidenceNeeded } from '../server/documentProcessor';
 import { studentExtractor, ExtractionValidationError } from '../server/studentExtractor';
 
 let passedTests = 0;
@@ -76,6 +76,23 @@ function assertThrows(fn: () => any, expectedErrorMessageSubstring: string, mess
   try {
     fn();
     console.error(`❌ FAIL (expected exception not thrown): ${message}`);
+    throw new Error(`Expected error containing "${expectedErrorMessageSubstring}" was not thrown`);
+  } catch (err: any) {
+    if (String(err?.message || err).toLowerCase().includes(expectedErrorMessageSubstring.toLowerCase())) {
+      passedTests++;
+      console.log(`✅ PASS: ${message}`);
+    } else {
+      console.error(`❌ FAIL (wrong error thrown): ${message}. Got: ${err?.message}`);
+      throw err;
+    }
+  }
+}
+
+async function assertRejects(fn: () => Promise<any>, expectedErrorMessageSubstring: string, message: string) {
+  totalTests++;
+  try {
+    await fn();
+    console.error(`❌ FAIL (expected rejection not thrown): ${message}`);
     throw new Error(`Expected error containing "${expectedErrorMessageSubstring}" was not thrown`);
   } catch (err: any) {
     if (String(err?.message || err).toLowerCase().includes(expectedErrorMessageSubstring.toLowerCase())) {
@@ -1934,6 +1951,893 @@ async function runTests() {
   assert(gradeCalls.length >= 1, 'Usage ledger recorded Stage 2 grading call.');
   assert((twoStageJob.metrics.inputTokens ?? 0) > 0, 'Consolidated inputTokens recorded in job metrics.');
   assert((twoStageJob.metrics.outputTokens ?? 0) > 0, 'Consolidated outputTokens recorded in job metrics.');
+
+  // =========================================================================
+  // TEST GROUP 13: Subject-Independent Answer-Key Generation & Multi-Discipline Evaluation
+  // =========================================================================
+  console.log('\n--- TEST GROUP 13: Subject-Independent Evaluation & Multi-Discipline Pipeline ---');
+
+  // 13.1 Subject-Independent PDF Processing Optimization (isVisualEvidenceNeeded)
+  const pureTextQp = {
+    name: 'QP_English_Literature.pdf',
+    text: 'Explain the central themes of power, guilt, and moral responsibility in 19th-century Victorian novels. Discuss with reference to two distinct authors and analyze their stylistic techniques in detail.',
+    base64: 'B64_PURE_TEXT',
+    mimeType: 'application/pdf',
+  };
+  assert(!isVisualEvidenceNeeded(pureTextQp), 'Optimization: Pure text question paper without visual elements requires no visual transmission (token saving).');
+
+  const mathEquationQp = {
+    name: 'QP_Calculus.pdf',
+    text: 'Evaluate the definite integral \\int_{0}^{1} \\frac{x^2}{\\sqrt{1-x^2}} dx and determine if \\sum_{n=1}^{\\infty} a_n converges.',
+    base64: 'B64_MATH_EQUATIONS',
+    mimeType: 'application/pdf',
+  };
+  assert(isVisualEvidenceNeeded(mathEquationQp), 'Optimization: Mathematical notation & LaTeX formulas retain visual evidence.');
+
+  const diagramQp = {
+    name: 'QP_Physics.pdf',
+    text: 'Question 1: Refer to [Fig 1] showing a block on an inclined plane. Determine normal force and friction.',
+    base64: 'B64_DIAGRAM',
+    mimeType: 'application/pdf',
+  };
+  assert(isVisualEvidenceNeeded(diagramQp), 'Optimization: Questions referencing diagrams ([Fig]) retain visual evidence.');
+
+  const chemistryQp = {
+    name: 'QP_Chemistry.pdf',
+    text: 'Write the complete balanced equation for C3H8 + 5O2 -> 3CO2 + 4H2O and draw the reaction mechanism.',
+    base64: 'B64_CHEMISTRY',
+    mimeType: 'application/pdf',
+  };
+  assert(isVisualEvidenceNeeded(chemistryQp), 'Optimization: Chemical formulas & reaction equations retain visual evidence.');
+
+  const codeQp = {
+    name: 'QP_ComputerScience.pdf',
+    text: 'Write a Python function def binary_search(arr, target): that returns the index of target in O(log n) time.',
+    base64: 'B64_CODE',
+    mimeType: 'application/pdf',
+  };
+  assert(isVisualEvidenceNeeded(codeQp), 'Optimization: Questions containing code blocks retain visual evidence.');
+
+  const commerceQp = {
+    name: 'QP_Commerce.pdf',
+    text: 'Prepare the Balance Sheet as of 31st March with ledger account details and journal entry for equipment purchase.',
+    base64: 'B64_COMMERCE',
+    mimeType: 'application/pdf',
+  };
+  assert(isVisualEvidenceNeeded(commerceQp), 'Optimization: Commerce accounting ledgers and balance sheet queries retain visual evidence.');
+
+  const shortScannedQp = {
+    name: 'Scanned_Scan_Only.pdf',
+    text: 'P1 OCR error',
+    base64: 'B64_SCANNED',
+    mimeType: 'application/pdf',
+  };
+  assert(isVisualEvidenceNeeded(shortScannedQp), 'Optimization: Scanned document with insufficient text (<50 chars) retains visual evidence.');
+
+  // DocumentProcessor input preparation:
+  // When QP is pure text and has no canonical key, pure text is transmitted without visual QP
+  const textOnlyPrep = documentProcessor.prepareInput({
+    sourceDoc: { name: 'student.pdf', base64: 'STU_B64', mimeType: 'application/pdf' },
+    questionPaper: pureTextQp,
+    mode: 'without-manual',
+    studentName: 'Literature Student',
+  });
+  const hasPureTextVisualQp = textOnlyPrep.contentsParts.some((p: any) =>
+    typeof p.text === 'string' && p.text.includes('DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)')
+  );
+  assert(!hasPureTextVisualQp, 'DocumentProcessor: Pure text question paper omits visual QP to minimize token usage.');
+
+  // When QP contains mathematical equations, visual QP is retained
+  const mathPrep = documentProcessor.prepareInput({
+    sourceDoc: { name: 'student.pdf', base64: 'STU_B64', mimeType: 'application/pdf' },
+    questionPaper: mathEquationQp,
+    mode: 'without-manual',
+    studentName: 'Math Student',
+  });
+  const hasMathVisualQp = mathPrep.contentsParts.some((p: any) =>
+    typeof p.text === 'string' && p.text.includes('DOCUMENT_START: OFFICIAL QUESTION PAPER (Visual)')
+  );
+  assert(hasMathVisualQp, 'DocumentProcessor: Mathematical question paper retains visual QP for notation fidelity.');
+
+  // Student answer script ALWAYS retains visual evidence
+  const studentVisualPreserved = mathPrep.contentsParts.some((p: any) =>
+    typeof p.text === 'string' && p.text.includes('DOCUMENT_START: STUDENT ACTUAL ANSWER SCRIPT')
+  );
+  assert(studentVisualPreserved, 'DocumentProcessor: Student answer script visual pages are faithfully preserved.');
+
+  // 13.2 Subject Test: Mathematics & Physical Sciences
+  setMockGeminiProvider(async ({ correlationId }) => {
+    if (correlationId.startsWith('ak_gen_')) {
+      return {
+        text: JSON.stringify({
+          examTitle: 'Advanced Calculus & Analytical Geometry',
+          totalMaxMarks: 20,
+          warnings: [],
+          questions: [
+            {
+              questionId: '1',
+              questionText: 'Evaluate the definite integral \\int_{0}^{\\pi/2} \\sin(x)\\cos(x) dx.',
+              maxMarks: 10,
+              referenceAnswer: 'Let u = sin(x), du = cos(x)dx. When x=0, u=0; x=pi/2, u=1. \\int_0^1 u du = [u^2/2]_0^1 = 1/2.',
+              expectedConcepts: ['Substitution method or double angle identity', 'Correct change of limits or antiderivative', 'Final answer = 1/2'],
+              acceptableAlternatives: ['Double-angle identity: \\int (1/2)\\sin(2x)dx = [- (1/4)\\cos(2x)]_0^{\\pi/2} = 1/2'],
+              markingCriteria: ['4 marks for valid substitution/identity', '3 marks for correct limits and antiderivative', '3 marks for exact result 1/2'],
+              diagramReferences: [],
+              confidence: 0.98,
+            },
+            {
+              questionId: '2',
+              questionText: 'Prove that the area of a right-angled triangle with base b and height h is (1/2)bh. Draw labelled diagram.',
+              maxMarks: 10,
+              referenceAnswer: 'Complete the rectangle of sides b and h. Diagonal splits rectangle of area bh into two congruent right triangles. Area = (1/2)bh.',
+              expectedConcepts: ['Rectangle completion or integral derivation', 'Congruence argument', 'Labelled diagram with base b, height h, hypotenuse'],
+              acceptableAlternatives: ['Coordinate geometry proof placing vertices at (0,0), (b,0), (0,h)'],
+              markingCriteria: ['5 marks for geometric proof', '5 marks for correct labelled diagram'],
+              diagramReferences: ['Right-angled coordinate geometry triangle with base b, height h, right angle symbol'],
+              confidence: 0.95,
+            },
+          ],
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Srinivasa Ramanujan',
+          examTitle: 'Advanced Calculus & Analytical Geometry',
+          answers: [
+            {
+              questionId: '1',
+              studentAnswerText: 'Used double angle identity: sin(x)cos(x) = (1/2)sin(2x). Antiderivative is -(1/4)cos(2x). Evaluated between 0 and pi/2 gives -1/4(-1 - 1) = 1/2.',
+              formulas: ['sin(x)cos(x) = 0.5sin(2x)', '\\int 0.5sin(2x)dx = -0.25cos(2x)', 'Result = 0.5'],
+              isAttempted: true,
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              studentAnswerText: 'Constructed rectangle with sides b and h. Triangle is half the rectangle. Area = 0.5 * b * h.',
+              diagramDescription: 'Hand-drawn right-angled triangle with vertices labeled A, B, C; base labeled b, vertical altitude labeled h, right angle marked at vertex B.',
+              formulas: ['Area = 0.5 * b * h'],
+              isAttempted: true,
+              confidence: 0.96,
+            },
+          ],
+          visualEvidenceRetained: true,
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    // Stage 2 Eval
+    return {
+      text: JSON.stringify({
+        studentName: 'Srinivasa Ramanujan',
+        testTitle: 'Advanced Calculus & Analytical Geometry',
+        testTopics: 'Definite Integrals & Geometric Proofs',
+        testDate: '2026-10-30',
+        totalScore: 20,
+        maxScore: 20,
+        questions: [
+          {
+            qNo: '1',
+            marks: 10,
+            maxMarks: 10,
+            isCorrect: true,
+            feedbackPoints: ['Correctly applied alternative double-angle identity.', 'Flawless calculation of definite limits.', 'Exact result 1/2.'],
+          },
+          {
+            qNo: '2',
+            marks: 10,
+            maxMarks: 10,
+            isCorrect: true,
+            feedbackPoints: ['Solid rectangle decomposition proof.', 'Accurate hand-drawn right triangle with all labels and right-angle box.'],
+          },
+        ],
+        generalFeedback: {
+          overallPerformance: ['Outstanding mathematical rigor and analytical clarity.'],
+          mcqs: [],
+          contentAccuracy: ['Precise calculus identities and geometric proof principles.'],
+          completenessOfAnswers: ['All intermediate derivation steps fully articulated.'],
+          presentationDiagrams: ['Clean diagrammatic presentation with clear vertex labels.'],
+          investigations: ['Valid double-angle substitution methodology.'],
+          attemptingQuestions: ['Attempted all questions completely.'],
+          actionPoints: ['Continue exploring multi-variable integration.'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 400 },
+    };
+  });
+
+  const mathKey = await answerKeyService.generateFromQuestionPaper({
+    questionPaper: mathEquationQp,
+    title: 'Advanced Calculus & Analytical Geometry',
+    subject: 'Mathematics',
+    grade: 'B.Sc / Engineering Year 1',
+    totalMaxMarks: 20,
+    metadata: { institutionId: 'inst_math_01', createdBy: 'prof_euler' },
+  });
+
+  assert(mathKey.subject === 'Mathematics', 'Math key: Correct subject preserved.');
+  assert(mathKey.questions.length === 2, 'Math key: Extracted both questions.');
+  assert(mathKey.questions[0].acceptableAlternatives.length > 0, 'Math key: Preserves acceptable alternative calculus methods.');
+  assert(mathKey.questions[1].diagramReferences?.length === 1, 'Math key: Preserves geometric diagram requirements.');
+
+  const approvedMathKey = answerKeyService.approveAnswerKey(mathKey.id, {
+    userId: 'prof_euler',
+    role: 'instructor',
+    institutionId: 'inst_math_01',
+    name: 'Prof. Euler',
+  });
+  assert(approvedMathKey.status === 'approved', 'Math key: Successfully approved by faculty instructor.');
+
+  // Math Evaluation Execution
+  const mathJob: EvaluationJob = {
+    id: `eval_math_${Date.now()}`,
+    correlationId: `corr_math_${Date.now()}`,
+    institutionId: 'inst_math_01',
+    status: 'queued',
+    progressPercent: 0,
+    currentStepMessage: 'Queued',
+    mode: 'without-manual',
+    studentName: 'Srinivasa Ramanujan',
+    inputPayload: {
+      sourceDoc: { name: 'ramanujan_calculus_script.pdf', base64: 'MATH_B64_DATA', mimeType: 'application/pdf' },
+      canonicalAnswerKey: approvedMathKey,
+    },
+    canonicalAnswerKey: approvedMathKey,
+    metrics: { correlationId: `corr_math_${Date.now()}`, startTime: Date.now(), cacheHit: false, retriesCount: 0 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const mathReport = await evaluationEngine.evaluate(mathJob);
+  assert(mathReport.totalScore === 20, 'Math evaluation: Awarded full 20/20 for mathematically valid alternative method.');
+  assert(mathReport.questions[0].marks === 10, 'Math evaluation: Q1 awarded full 10 marks.');
+  assert(mathJob.extractedScript?.answers[0].formulas?.length! >= 1, 'Math evaluation: Extracted formulas preserved.');
+  assert(mathJob.extractedScript?.visualEvidenceRetained === true, 'Math evaluation: Visual evidence retained for geometry diagram.');
+
+  // 13.3 Subject Test: Computer Science & Software Engineering
+  setMockGeminiProvider(async ({ correlationId }) => {
+    if (correlationId.startsWith('ak_gen_')) {
+      return {
+        text: JSON.stringify({
+          examTitle: 'Data Structures & Algorithms',
+          totalMaxMarks: 15,
+          warnings: [],
+          questions: [
+            {
+              questionId: '1',
+              questionText: 'Implement binary search in Python. Explain time complexity O(log n) and edge case handling for empty list.',
+              maxMarks: 8,
+              referenceAnswer: 'def binary_search(arr, target):\n    low, high = 0, len(arr) - 1\n    while low <= high:\n        mid = (low + high) // 2\n        if arr[mid] == target: return mid\n        elif arr[mid] < target: low = mid + 1\n        else: high = mid - 1\n    return -1\nTime complexity is O(log n) as search space halves each iteration.',
+              expectedConcepts: ['Pointers initialization', 'While loop condition low <= high', 'Mid calculation preventing overflow', 'Halving logic', 'O(log n) proof', 'Empty array returns -1'],
+              acceptableAlternatives: ['Recursive implementation', 'left, right or l, r variable naming', 'mid = low + (high - low) // 2'],
+              markingCriteria: ['4 marks for correct Python code', '2 marks for boundary & empty list handling', '2 marks for O(log n) derivation'],
+              diagramReferences: ['Search space halving recursion tree / interval diagram'],
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              questionText: 'Draw the logic circuit diagram of a 2-to-1 Multiplexer and write its boolean truth table.',
+              maxMarks: 7,
+              referenceAnswer: 'Y = (A AND NOT S) OR (B AND S). Circuit contains 1 NOT gate, 2 AND gates, and 1 OR gate.',
+              expectedConcepts: ['Boolean expression Y = A*S_bar + B*S', 'Truth table with inputs S, A, B and output Y', 'Logic gates schematic'],
+              acceptableAlternatives: ['NAND-only implementation'],
+              markingCriteria: ['3 marks for Boolean truth table', '4 marks for correctly interconnected logic gates'],
+              diagramReferences: ['2-to-1 Multiplexer logic gate schematic showing NOT, AND, OR gates'],
+              confidence: 0.96,
+            },
+          ],
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Ada Lovelace',
+          examTitle: 'Data Structures & Algorithms',
+          answers: [
+            {
+              questionId: '1',
+              studentAnswerText: 'def binary_search(arr, target):\n    l, r = 0, len(arr) - 1\n    while l <= r:\n        m = l + (r - l) // 2\n        if arr[m] == target: return m\n        elif arr[m] < target: l = m + 1\n        else: r = m - 1\n    return -1\nEach step divides N by 2, leading to log2(N) steps -> O(log N). Empty array: l=0, r=-1, loop terminates immediately returning -1.',
+              isAttempted: true,
+              confidence: 0.98,
+            },
+            {
+              questionId: '2',
+              studentAnswerText: 'Truth table:\nS A B | Y\n0 0 X | 0\n0 1 X | 1\n1 X 0 | 0\n1 X 1 | 1\nLogic expression Y = (A and ~S) or (B and S).',
+              diagramDescription: 'Drawn 2-to-1 MUX schematic with select line S inverted to first AND gate with input A; non-inverted S to second AND gate with input B; outputs merged into final OR gate labeled Y.',
+              isAttempted: true,
+              confidence: 0.95,
+            },
+          ],
+          visualEvidenceRetained: true,
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    return {
+      text: JSON.stringify({
+        studentName: 'Ada Lovelace',
+        testTitle: 'Data Structures & Algorithms',
+        testTopics: 'Search Algorithms & Digital Logic',
+        testDate: '2026-10-30',
+        totalScore: 15,
+        maxScore: 15,
+        questions: [
+          {
+            qNo: '1',
+            marks: 8,
+            maxMarks: 8,
+            isCorrect: true,
+            feedbackPoints: ['Correct Python implementation using safe midpoint calculation.', 'Robust empty array handling verified.', 'Accurate O(log n) time complexity proof.'],
+          },
+          {
+            qNo: '2',
+            marks: 7,
+            maxMarks: 7,
+            isCorrect: true,
+            feedbackPoints: ['Accurate 2-to-1 MUX truth table.', 'Properly routed NOT, AND, and OR logic gate schematic.'],
+          },
+        ],
+        generalFeedback: {
+          overallPerformance: ['Exemplary algorithmic thinking and digital logic proficiency.'],
+          mcqs: [],
+          contentAccuracy: ['Syntactically and logically correct code.'],
+          completenessOfAnswers: ['Both algorithm and schematic thoroughly developed.'],
+          presentationDiagrams: ['Standard logic gate symbols correctly used in schematic.'],
+          investigations: ['Midpoint calculation prevents integer overflow.'],
+          attemptingQuestions: ['Complete question coverage.'],
+          actionPoints: ['Explore non-linear search algorithms (e.g. ternary search).'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 400 },
+    };
+  });
+
+  const csKey = await answerKeyService.generateFromQuestionPaper({
+    questionPaper: codeQp,
+    title: 'Data Structures & Algorithms',
+    subject: 'Computer Science',
+    grade: 'B.Tech / CS Year 2',
+    totalMaxMarks: 15,
+    metadata: { institutionId: 'inst_cs_01', createdBy: 'prof_turing' },
+  });
+
+  assert(csKey.subject === 'Computer Science', 'CS key: Subject correctly tagged as Computer Science.');
+  assert(csKey.questions[0].referenceAnswer.includes('def binary_search'), 'CS key: Preserves Python code in model answer.');
+  assert(csKey.questions[1].diagramReferences?.length === 1, 'CS key: Preserves circuit schematic diagram requirement.');
+
+  const approvedCsKey = answerKeyService.approveAnswerKey(csKey.id, {
+    userId: 'prof_turing',
+    role: 'instructor',
+    institutionId: 'inst_cs_01',
+    name: 'Prof. Turing',
+  });
+
+  const csJob: EvaluationJob = {
+    id: `eval_cs_${Date.now()}`,
+    correlationId: `corr_cs_${Date.now()}`,
+    institutionId: 'inst_cs_01',
+    status: 'queued',
+    progressPercent: 0,
+    currentStepMessage: 'Queued',
+    mode: 'without-manual',
+    studentName: 'Ada Lovelace',
+    inputPayload: {
+      sourceDoc: { name: 'ada_algorithms.pdf', base64: 'CS_B64_DATA', mimeType: 'application/pdf' },
+      canonicalAnswerKey: approvedCsKey,
+    },
+    canonicalAnswerKey: approvedCsKey,
+    metrics: { correlationId: `corr_cs_${Date.now()}`, startTime: Date.now(), cacheHit: false, retriesCount: 0 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const csReport = await evaluationEngine.evaluate(csJob);
+  assert(csReport.totalScore === 15, 'CS evaluation: Full 15/15 marks awarded for functionally correct code and schematic.');
+  assert(csReport.questions[0].marks === 8, 'CS evaluation: Binary search code awarded full 8 marks.');
+  assert(csReport.questions[1].marks === 7, 'CS evaluation: Logic circuit awarded full 7 marks.');
+
+  // 13.4 Subject Test: Chemistry & Chemical Sciences
+  setMockGeminiProvider(async ({ correlationId }) => {
+    if (correlationId.startsWith('ak_ext_')) {
+      return {
+        text: JSON.stringify({
+          examTitle: 'Organic & Physical Chemistry Mid-Term',
+          totalMaxMarks: 10,
+          warnings: [],
+          questions: [
+            {
+              questionId: '1',
+              questionText: 'Write and balance the complete combustion reaction of ethanol (C2H5OH).',
+              maxMarks: 4,
+              referenceAnswer: 'C2H5OH(l) + 3 O2(g) -> 2 CO2(g) + 3 H2O(l) + Heat',
+              expectedConcepts: ['Reactants: C2H5OH + O2', 'Products: CO2 + H2O', 'Correct stoichiometric coefficients (1, 3 -> 2, 3)'],
+              acceptableAlternatives: ['Unstated physical states if coefficients are balanced'],
+              markingCriteria: ['2 marks for correct products', '2 marks for stoichiometric balancing'],
+              diagramReferences: [],
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              questionText: 'Describe the SN2 mechanism for reaction of chloromethane with hydroxide ion. Include stereochemistry.',
+              maxMarks: 6,
+              referenceAnswer: 'Backside nucleophilic attack of OH- on CH3Cl creates a pentacoordinate transition state [HO...CH3...Cl]-, expels Cl- leaving group, leading to inversion of configuration (Walden inversion).',
+              expectedConcepts: ['Bimolecular nucleophilic substitution', 'Backside attack', 'Pentacoordinate transition state', 'Walden inversion'],
+              acceptableAlternatives: ['Detailed orbital diagram showing sp3 to sp2 transition state'],
+              markingCriteria: ['2 marks for backside attack mechanism', '2 marks for transition state representation', '2 marks for Walden inversion statement'],
+              diagramReferences: ['Backside attack arrow and pentacoordinate transition state diagram'],
+              confidence: 0.96,
+            },
+          ],
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Marie Curie',
+          examTitle: 'Organic & Physical Chemistry Mid-Term',
+          answers: [
+            {
+              questionId: '1',
+              studentAnswerText: 'C2H5OH + 3 O2 -> 2 CO2 + 3 H2O',
+              formulas: ['C2H5OH + 3O2 -> 2CO2 + 3H2O'],
+              isAttempted: true,
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              studentAnswerText: 'Hydroxide ion attacks carbon from the side opposite to chlorine. A transition state forms where both OH and Cl are partially bonded. Cl- leaves, causing complete inversion of configuration (Walden inversion).',
+              diagramDescription: 'Chemical structure drawing of CH3Cl with curved arrow from :OH- to central carbon; bracketed transition state with partial bonds dashed to HO and Cl and negative charge; final product with inverted tetrahedral geometry.',
+              formulas: ['[HO...CH3...Cl]^-'],
+              isAttempted: true,
+              confidence: 0.97,
+            },
+          ],
+          visualEvidenceRetained: true,
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    return {
+      text: JSON.stringify({
+        studentName: 'Marie Curie',
+        testTitle: 'Organic & Physical Chemistry Mid-Term',
+        testTopics: 'Stoichiometry & Reaction Mechanisms',
+        testDate: '2026-10-30',
+        totalScore: 10,
+        maxScore: 10,
+        questions: [
+          {
+            qNo: '1',
+            marks: 4,
+            maxMarks: 4,
+            isCorrect: true,
+            feedbackPoints: ['Correctly balanced stoichiometric combustion equation.'],
+          },
+          {
+            qNo: '2',
+            marks: 6,
+            maxMarks: 6,
+            isCorrect: true,
+            feedbackPoints: ['Accurate chemical transition state illustration.', 'Clear explanation of backside nucleophilic attack and Walden inversion.'],
+          },
+        ],
+        generalFeedback: {
+          overallPerformance: ['Mastery of organic reaction pathways and chemical stoichiometry.'],
+          mcqs: [],
+          contentAccuracy: ['Flawless chemical formulas and balancing.'],
+          completenessOfAnswers: ['Comprehensive mechanism and transition state.'],
+          presentationDiagrams: ['Accurate chemical bond arrows and stereochemical inversion.'],
+          investigations: ['Bimolecular mechanism kinetics correctly reflected.'],
+          attemptingQuestions: ['All questions attempted.'],
+          actionPoints: ['Continue exploring stereospecific synthesis reactions.'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 400 },
+    };
+  });
+
+  const chemKey = await answerKeyService.extractFromUploadedKey({
+    answerKeyDoc: {
+      name: 'Chemistry_Key_Official.pdf',
+      text: 'Q1. Combustion: C2H5OH + 3O2 -> 2CO2 + 3H2O (4 marks). Q2. SN2 backside attack and Walden inversion (6 marks).',
+      base64: 'CHEM_KEY_B64',
+      mimeType: 'application/pdf',
+    },
+    title: 'Organic & Physical Chemistry Mid-Term',
+    subject: 'Chemistry',
+    grade: 'B.Sc Chemistry',
+    totalMaxMarks: 10,
+    metadata: { institutionId: 'inst_chem_01', createdBy: 'prof_mendeleev' },
+  });
+
+  assert(chemKey.subject === 'Chemistry', 'Chemistry key: Subject correctly tagged as Chemistry.');
+  assert(chemKey.sourceMode === 'uploaded', 'Chemistry key: Uploaded mode preserved.');
+  assert(chemKey.questions[0].referenceAnswer.includes('C2H5OH'), 'Chemistry key: Preserves chemical equations.');
+
+  const approvedChemKey = answerKeyService.approveAnswerKey(chemKey.id, {
+    userId: 'prof_mendeleev',
+    role: 'instructor',
+    institutionId: 'inst_chem_01',
+    name: 'Prof. Mendeleev',
+  });
+
+  const chemJob: EvaluationJob = {
+    id: `eval_chem_${Date.now()}`,
+    correlationId: `corr_chem_${Date.now()}`,
+    institutionId: 'inst_chem_01',
+    status: 'queued',
+    progressPercent: 0,
+    currentStepMessage: 'Queued',
+    mode: 'without-manual',
+    studentName: 'Marie Curie',
+    inputPayload: {
+      sourceDoc: { name: 'curie_chemistry_script.pdf', base64: 'CHEM_B64_DATA', mimeType: 'application/pdf' },
+      canonicalAnswerKey: approvedChemKey,
+    },
+    canonicalAnswerKey: approvedChemKey,
+    metrics: { correlationId: `corr_chem_${Date.now()}`, startTime: Date.now(), cacheHit: false, retriesCount: 0 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const chemReport = await evaluationEngine.evaluate(chemJob);
+  assert(chemReport.totalScore === 10, 'Chemistry evaluation: Full 10/10 awarded for balanced equations and reaction mechanism.');
+  assert(chemReport.questions[1].marks === 6, 'Chemistry evaluation: SN2 mechanism with transition state awarded 6 marks.');
+
+  // 13.5 Subject Test: Commerce, Economics & Accounting
+  setMockGeminiProvider(async ({ correlationId }) => {
+    if (correlationId.startsWith('ak_gen_')) {
+      return {
+        text: JSON.stringify({
+          examTitle: 'Financial Accounting & Microeconomics',
+          totalMaxMarks: 12,
+          warnings: [],
+          questions: [
+            {
+              questionId: '1',
+              questionText: 'Record the journal entry for purchasing office equipment for $50,000, paying $20,000 cash and balance on credit.',
+              maxMarks: 6,
+              referenceAnswer: 'Equipment A/c Dr. $50,000\n  To Cash A/c $20,000\n  To Accounts Payable A/c $30,000\n(Being equipment purchased partly in cash and partly on credit)',
+              expectedConcepts: ['Debit asset increase (Equipment)', 'Credit asset decrease (Cash)', 'Credit liability increase (Accounts Payable)', 'Sum equality: 50,000 = 20,000 + 30,000'],
+              acceptableAlternatives: ['Trade Creditors in place of Accounts Payable'],
+              markingCriteria: ['2 marks for debit entry', '2 marks for cash credit', '2 marks for accounts payable credit'],
+              diagramReferences: [],
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              questionText: 'Explain the market equilibrium effect of an increase in raw material costs using a supply-demand curve diagram.',
+              maxMarks: 6,
+              referenceAnswer: 'An increase in raw material costs decreases supply, shifting supply curve leftward from S1 to S2. Demand remains unchanged. Equilibrium price rises from P1 to P2, and equilibrium quantity falls from Q1 to Q2.',
+              expectedConcepts: ['Supply curve shifts leftward (S1 to S2)', 'Demand curve remains constant', 'Higher equilibrium price (P2 > P1)', 'Lower equilibrium quantity (Q2 < Q1)'],
+              acceptableAlternatives: ['Price increase and quantity decrease graphical demonstration'],
+              markingCriteria: ['3 marks for verbal analysis', '3 marks for correct labeled supply-demand curve shift graph'],
+              diagramReferences: ['Supply and Demand curve graph showing S1->S2 left shift, price increase P1->P2, quantity decrease Q1->Q2'],
+              confidence: 0.97,
+            },
+          ],
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Adam Smith',
+          examTitle: 'Financial Accounting & Microeconomics',
+          answers: [
+            {
+              questionId: '1',
+              studentAnswerText: 'Office Equipment A/c  Dr. 50,000\n   To Cash A/c              20,000\n   To Accounts Payable      30,000\n(Office equipment acquired for cash and on account)',
+              isAttempted: true,
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              studentAnswerText: 'Higher input cost reduces profitability at every price level, causing supply curve to shift to the left. At the original price there is shortage, driving price up to new equilibrium P2 while quantity traded falls to Q2.',
+              diagramDescription: 'Market equilibrium graph with Price on Y-axis and Quantity on X-axis; downward-sloping Demand curve D; initial supply S1 and leftward shifted supply S2; arrow showing price rise from P1 to P2 and quantity drop from Q1 to Q2.',
+              isAttempted: true,
+              confidence: 0.96,
+            },
+          ],
+          visualEvidenceRetained: true,
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    return {
+      text: JSON.stringify({
+        studentName: 'Adam Smith',
+        testTitle: 'Financial Accounting & Microeconomics',
+        testTopics: 'Double Entry Bookkeeping & Market Dynamics',
+        testDate: '2026-10-30',
+        totalScore: 12,
+        maxScore: 12,
+        questions: [
+          {
+            qNo: '1',
+            marks: 6,
+            maxMarks: 6,
+            isCorrect: true,
+            feedbackPoints: ['Correct compound journal entry with balanced debit and credit totals.'],
+          },
+          {
+            qNo: '2',
+            marks: 6,
+            maxMarks: 6,
+            isCorrect: true,
+            feedbackPoints: ['Sound economic reasoning on input cost shock.', 'Accurate supply shift diagram with labeled price and quantity axes.'],
+          },
+        ],
+        generalFeedback: {
+          overallPerformance: ['Strong command of commercial accounting principles and microeconomics.'],
+          mcqs: [],
+          contentAccuracy: ['Accurate double-entry rules and equilibrium shifts.'],
+          completenessOfAnswers: ['Clear compound entries and graphical explanations.'],
+          presentationDiagrams: ['Neat supply and demand curve graph with clear directional arrows.'],
+          investigations: ['Market clearing mechanism correctly explained.'],
+          attemptingQuestions: ['Full question coverage.'],
+          actionPoints: ['Explore price elasticity of supply impacts.'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 400 },
+    };
+  });
+
+  const commerceKey = await answerKeyService.generateFromQuestionPaper({
+    questionPaper: commerceQp,
+    title: 'Financial Accounting & Microeconomics',
+    subject: 'Commerce & Economics',
+    grade: 'B.Com / Economics Year 1',
+    totalMaxMarks: 12,
+    metadata: { institutionId: 'inst_commerce_01', createdBy: 'prof_keynes' },
+  });
+
+  assert(commerceKey.subject === 'Commerce & Economics', 'Commerce key: Subject correctly tagged as Commerce & Economics.');
+  assert(commerceKey.questions[0].referenceAnswer.includes('Equipment A/c Dr'), 'Commerce key: Preserves debit/credit journal entries.');
+  assert(commerceKey.questions[1].diagramReferences?.length === 1, 'Commerce key: Preserves supply-demand curve diagram reference.');
+
+  const approvedCommerceKey = answerKeyService.approveAnswerKey(commerceKey.id, {
+    userId: 'prof_keynes',
+    role: 'instructor',
+    institutionId: 'inst_commerce_01',
+    name: 'Prof. Keynes',
+  });
+
+  const commerceJob: EvaluationJob = {
+    id: `eval_comm_${Date.now()}`,
+    correlationId: `corr_comm_${Date.now()}`,
+    institutionId: 'inst_commerce_01',
+    status: 'queued',
+    progressPercent: 0,
+    currentStepMessage: 'Queued',
+    mode: 'without-manual',
+    studentName: 'Adam Smith',
+    inputPayload: {
+      sourceDoc: { name: 'smith_accounting_script.pdf', base64: 'COMM_B64_DATA', mimeType: 'application/pdf' },
+      canonicalAnswerKey: approvedCommerceKey,
+    },
+    canonicalAnswerKey: approvedCommerceKey,
+    metrics: { correlationId: `corr_comm_${Date.now()}`, startTime: Date.now(), cacheHit: false, retriesCount: 0 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const commerceReport = await evaluationEngine.evaluate(commerceJob);
+  assert(commerceReport.totalScore === 12, 'Commerce evaluation: Full 12/12 awarded for journal entries and economic graph.');
+  assert(commerceReport.questions[0].marks === 6, 'Commerce evaluation: Double entry accounting awarded full 6 marks.');
+  assert(commerceReport.questions[1].marks === 6, 'Commerce evaluation: Supply curve shift analysis awarded full 6 marks.');
+
+  // 13.6 Subject Test: Humanities & Languages / Literature
+  setMockGeminiProvider(async ({ correlationId }) => {
+    if (correlationId.startsWith('ak_gen_')) {
+      return {
+        text: JSON.stringify({
+          examTitle: 'English Literature & European History',
+          totalMaxMarks: 20,
+          warnings: [],
+          questions: [
+            {
+              questionId: '1',
+              questionText: 'Analyze Shakespeare\'s depiction of vaulting ambition and psychological guilt in Macbeth. Support with textual references.',
+              maxMarks: 10,
+              referenceAnswer: 'Macbeth examines how hubris and prophetic temptation override moral conscience. Key soliloquies ("If it were done when \'tis done", "Tomorrow and tomorrow") reveal internal descent into paranoia, echoed by Lady Macbeth\'s somnambulism ("Out, damned spot").',
+              expectedConcepts: ['Vaulting ambition as tragic hamartia', 'Supernatural temptation vs moral agency', 'Psychological decay of Macbeth and Lady Macbeth', 'Specific textual citations/soliloquies'],
+              acceptableAlternatives: ['Aristotelian tragic flaw interpretation or political Jacobean allegory'],
+              markingCriteria: ['4 marks for thematic thesis', '3 marks for textual citations', '3 marks for literary analysis of dramatic irony and imagery'],
+              diagramReferences: [],
+              confidence: 0.98,
+            },
+            {
+              questionId: '2',
+              questionText: 'Explain the socioeconomic and institutional causes of the French Revolution of 1789.',
+              maxMarks: 10,
+              referenceAnswer: 'Causes include: 1) Three Estates feudal inequality with Third Estate bearing tax burden (taille), 2) Financial insolvency from Seven Years War and American Revolution, 3) Agricultural famine of 1788-1789, 4) Enlightenment ideals (Rousseau, Voltaire) challenging absolutism.',
+              expectedConcepts: ['Ancien Regime social hierarchy', 'Crown fiscal bankruptcy', 'Bread shortages/famine', 'Enlightenment political philosophy'],
+              acceptableAlternatives: ['Marxist class struggle analysis or revisionist fiscal-institutional interpretation'],
+              markingCriteria: ['3 marks for social structure & Estates General', '3 marks for financial crisis', '2 marks for Enlightenment influence', '2 marks for immediate triggers (1788 harvests)'],
+              diagramReferences: [],
+              confidence: 0.97,
+            },
+          ],
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    if (correlationId.startsWith('ext_')) {
+      return {
+        text: JSON.stringify({
+          studentName: 'Virginia Woolf',
+          examTitle: 'English Literature & European History',
+          answers: [
+            {
+              questionId: '1',
+              studentAnswerText: 'Shakespeare portrays ambition not merely as desire, but as an overwhelming pathology. In Act 1, Macbeth acknowledges "vaulting ambition which o\'erleaps itself". By Act 5, ambition has emptied life of meaning, culminating in the nihilistic despair of "a tale told by an idiot, full of sound and fury". Lady Macbeth\'s obsessive washing of hands externalizes guilt that water cannot purge.',
+              isAttempted: true,
+              confidence: 0.99,
+            },
+            {
+              questionId: '2',
+              studentAnswerText: 'The 1789 Revolution stemmed from systemic fiscal bankruptcy aggravated by war debts, combined with the regressive taxation of the Third Estate while the nobility and clergy enjoyed exemptions. Enlightenment writings questioned divine right absolutism, while catastrophic grain harvest failures in 1788 sparked urban riots and the storming of the Bastille.',
+              isAttempted: true,
+              confidence: 0.98,
+            },
+          ],
+          visualEvidenceRetained: false,
+        }),
+        usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 300 },
+      };
+    }
+
+    return {
+      text: JSON.stringify({
+        studentName: 'Virginia Woolf',
+        testTitle: 'English Literature & European History',
+        testTopics: 'Shakespearean Tragedy & 18th Century Historiography',
+        testDate: '2026-10-30',
+        totalScore: 20,
+        maxScore: 20,
+        questions: [
+          {
+            qNo: '1',
+            marks: 10,
+            maxMarks: 10,
+            isCorrect: true,
+            feedbackPoints: ['Exceptional textual integration of key soliloquies.', 'Deep psychological dissection of Macbeth and Lady Macbeth.'],
+          },
+          {
+            qNo: '2',
+            marks: 10,
+            maxMarks: 10,
+            isCorrect: true,
+            feedbackPoints: ['Comprehensive breakdown of institutional, economic, and intellectual causes of 1789.'],
+          },
+        ],
+        generalFeedback: {
+          overallPerformance: ['Distinguished essay composition and critical literary scholarship.'],
+          mcqs: [],
+          contentAccuracy: ['Flawless historical context and literary text quotations.'],
+          completenessOfAnswers: ['Well-structured thesis statements with nuanced analysis.'],
+          presentationDiagrams: ['Cohesive essay paragraph transitions.'],
+          investigations: ['Critical comparative historiography.'],
+          attemptingQuestions: ['Attempted all questions.'],
+          actionPoints: ['Continue writing with publishable analytical depth.'],
+        },
+      }),
+      usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 400 },
+    };
+  });
+
+  const humanitiesKey = await answerKeyService.generateFromQuestionPaper({
+    questionPaper: pureTextQp,
+    title: 'English Literature & European History',
+    subject: 'Humanities & Literature',
+    grade: 'B.A. Literature Year 2',
+    totalMaxMarks: 20,
+    metadata: { institutionId: 'inst_humanities_01', createdBy: 'prof_woolf' },
+  });
+
+  assert(humanitiesKey.subject === 'Humanities & Literature', 'Humanities key: Subject correctly tagged as Humanities & Literature.');
+  assert(humanitiesKey.questions.length === 2, 'Humanities key: Generated both essay rubrics.');
+  assert(humanitiesKey.questions[0].expectedConcepts.some((c) => c.toLowerCase().includes('ambition')), 'Humanities key: Expected concepts reflect actual literature question.');
+
+  const approvedHumanitiesKey = answerKeyService.approveAnswerKey(humanitiesKey.id, {
+    userId: 'prof_woolf',
+    role: 'instructor',
+    institutionId: 'inst_humanities_01',
+    name: 'Prof. Woolf',
+  });
+
+  const humanitiesJob: EvaluationJob = {
+    id: `eval_hum_${Date.now()}`,
+    correlationId: `corr_hum_${Date.now()}`,
+    institutionId: 'inst_humanities_01',
+    status: 'queued',
+    progressPercent: 0,
+    currentStepMessage: 'Queued',
+    mode: 'without-manual',
+    studentName: 'Virginia Woolf',
+    inputPayload: {
+      sourceDoc: { name: 'woolf_essay_script.pdf', text: 'Shakespeare portrays ambition...', mimeType: 'application/pdf' },
+      canonicalAnswerKey: approvedHumanitiesKey,
+    },
+    canonicalAnswerKey: approvedHumanitiesKey,
+    metrics: { correlationId: `corr_hum_${Date.now()}`, startTime: Date.now(), cacheHit: false, retriesCount: 0 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const humanitiesReport = await evaluationEngine.evaluate(humanitiesJob);
+  assert(humanitiesReport.totalScore === 20, 'Humanities evaluation: Full 20/20 awarded for analytical essay thesis.');
+  assert(humanitiesReport.questions[0].marks === 10, 'Humanities evaluation: Macbeth essay awarded 10 marks.');
+  assert(humanitiesReport.questions[1].marks === 10, 'Humanities evaluation: French Revolution history essay awarded 10 marks.');
+
+  // 13.7 Cross-Discipline Strict Validation Invariance: Unapproved keys, zero marks & bound violations
+  await assertRejects(
+    async () => {
+      const draftKey: CanonicalAnswerKey = { ...approvedMathKey, status: 'draft' };
+      const job: EvaluationJob = {
+        ...mathJob,
+        canonicalAnswerKey: draftKey,
+        inputPayload: { ...mathJob.inputPayload, canonicalAnswerKey: draftKey },
+      };
+      await (evaluationEngine as any).evaluate(job);
+    },
+    'unapproved answer key',
+    'Cross-Discipline Invariance: Math grading strictly rejected when answer key is in draft status.'
+  );
+
+  await assertRejects(
+    async () => {
+      const draftCsKey: CanonicalAnswerKey = { ...approvedCsKey, status: 'needs_review' };
+      const job: EvaluationJob = {
+        ...csJob,
+        canonicalAnswerKey: draftCsKey,
+        inputPayload: { ...csJob.inputPayload, canonicalAnswerKey: draftCsKey },
+      };
+      await (evaluationEngine as any).evaluate(job);
+    },
+    'unapproved answer key',
+    'Cross-Discipline Invariance: Computer Science grading strictly rejected when answer key needs review.'
+  );
+
+  // Updating an approved key resets status to draft across any subject
+  const updatedMathKey = answerKeyService.updateAnswerKey(
+    approvedMathKey.id,
+    { title: 'Calculus Advanced (Revised)' },
+    { userId: 'prof_euler', role: 'instructor', institutionId: 'inst_math_01', name: 'Prof. Euler' }
+  );
+  assert(updatedMathKey.version === 2, 'Cross-Discipline Invariance: Editing approved math key bumps version to 2.');
+  assert(updatedMathKey.status === 'draft', 'Cross-Discipline Invariance: Editing approved math key resets status to draft.');
+
+  // Zero-marks approval rejection across non-medical disciplines
+  const zeroMarkKey: CanonicalAnswerKey = {
+    ...approvedCsKey,
+    id: `ak_zero_${Date.now()}`,
+    status: 'draft',
+    questions: [{ questionId: '1', maxMarks: 0, referenceAnswer: 'def zero(): pass', expectedConcepts: [], acceptableAlternatives: [], markingCriteria: [] }],
+  };
+  (answerKeyService as any).saveToDisk(zeroMarkKey);
+  assertThrows(
+    () => answerKeyService.approveAnswerKey(zeroMarkKey.id, { userId: 'prof_turing', role: 'instructor', institutionId: 'inst_cs_01', name: 'Prof. Turing' }),
+    'All questions must have positive maximum marks before approval',
+    'Cross-Discipline Invariance: Rejection of zero maxMarks enforced for Computer Science.'
+  );
 
   // Clean up mock provider
   setMockGeminiProvider(null);
