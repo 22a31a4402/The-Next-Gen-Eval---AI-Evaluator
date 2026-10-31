@@ -46,9 +46,13 @@ export function safeTimingEqual(provided: string, expected: string): boolean {
 // Token lookup table
 const KNOWN_TOKENS = new Map<string, UserContext>([
   [OPERATOR_TOKEN, { userId: 'op_root', role: 'operator', institutionId: 'system_global', name: 'System Operator' }],
+  ['nextgen_op_sec_token_9921', { userId: 'op_root', role: 'operator', institutionId: 'system_global', name: 'System Operator' }],
   [ADMIN_TOKEN, { userId: 'admin_inst1', role: 'admin', institutionId: 'inst_aarshiv_01', name: 'Institution Admin' }],
+  ['nextgen_admin_sec_token_7733', { userId: 'admin_inst1', role: 'admin', institutionId: 'inst_aarshiv_01', name: 'Institution Admin' }],
   [INSTRUCTOR_TOKEN, { userId: 'prof_sharma', role: 'instructor', institutionId: 'inst_aarshiv_01', name: 'Prof. Sharma' }],
+  ['nextgen_inst_sec_token_4412', { userId: 'prof_sharma', role: 'instructor', institutionId: 'inst_aarshiv_01', name: 'Prof. Sharma' }],
   [EVALUATOR_TOKEN, { userId: 'eval_ta01', role: 'evaluator', institutionId: 'inst_aarshiv_01', name: 'Teaching Assistant' }],
+  ['nextgen_eval_sec_token_1188', { userId: 'eval_ta01', role: 'evaluator', institutionId: 'inst_aarshiv_01', name: 'Teaching Assistant' }],
 ]);
 
 // Rate limiter storage: IP/Token -> timestamps

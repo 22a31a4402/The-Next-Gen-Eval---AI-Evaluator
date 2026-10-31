@@ -115,9 +115,9 @@ app.use('/api/evaluations', evaluationsRouter);
 app.use('/api/answer-keys', answerKeysRouter);
 
 // Explicit 404 handler for unmatched API routes to ensure JSON response instead of HTML
-app.all('/api/*', (req: Request, res: Response) => {
+app.use('/api', (req: Request, res: Response) => {
   res.status(404).setHeader('Content-Type', 'application/json').json({
-    error: `API endpoint not found: ${req.method} ${req.path}`,
+    error: `API endpoint not found: ${req.method} ${req.originalUrl || req.path}`,
     category: 'Not Found',
     retryable: false,
     statusCode: 404,
