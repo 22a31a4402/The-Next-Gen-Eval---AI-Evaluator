@@ -26,6 +26,8 @@ import {
   AnswerKeySourceMode,
   AnswerKeyStatus,
   getCompleteQuestionIdentifier,
+  calculateCanonicalKeyMarks,
+  MarksValidationResult,
 } from './types';
 export { getCompleteQuestionIdentifier };
 import { UserContext } from './auth';
@@ -171,6 +173,19 @@ ${subject ? `Subject: "${subject}"` : ''}
 ${grade ? `Grade / Academic Level: "${grade}"` : ''}
 ${totalMaxMarks ? `Target Total Marks: ${totalMaxMarks}` : ''}
 
+CRITICAL QUESTION AND MARKS EXTRACTION REQUIREMENTS:
+1. Extract EVERY question, sub-question, section, question number, and assigned marks exactly as printed.
+2. Preserve hierarchical numbering such as 1, 1.1, 1.2, 2(a), 2(b), etc. accurately.
+3. Extract explicit printed maximum marks for the entire question paper (printedMaxMarks, e.g. 80, 100) if stated in the header or instructions.
+4. Extract section-wise maximum marks and section names (e.g. "Section A", "Part I").
+5. Never assume, infer, or invent marks when missing or unclear. Flag uncertain values in flaggedIssue for faculty review.
+6. Distinguish alternative questions (OR choices, e.g. "Answer Q5 OR Q6", "Either 2(a) OR 2(b)"):
+   - Set isAlternative: true
+   - Set alternativeGroup: "Q5_OR_Q6" (or equivalent group identifier).
+7. If a parent question (e.g. "Question 2" - 10 marks) has sub-questions (e.g. 2.1 - 4 marks, 2.2 - 6 marks):
+   - Set isParentHeader: true on the container question so its marks are not counted twice.
+   - Set parentQuestionId: "2" on sub-questions 2.1 and 2.2.
+
 SUBJECT-INDEPENDENT REQUIREMENTS ACROSS ACADEMIC DISCIPLINES:
 - NextGen Eval supports question papers across mathematics, physical sciences, chemical sciences, biological & medical sciences, engineering, computer science, commerce, economics, languages, literature, humanities, and social sciences.
 - Do NOT make assumptions based on any particular subject. Model answers, expected concepts, alternative formulations, and marking rubrics must faithfully reflect the actual subject and question:
@@ -269,7 +284,6 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     const warnings: string[] = Array.isArray(parsedResult.warnings) ? parsedResult.warnings : [];
     const seenIds = new Set<string>();
     let hasFlaggedIssues = false;
-    let computedSum = 0;
 
     for (let i = 0; i < rawQuestions.length; i++) {
       const q = rawQuestions[i];
@@ -278,13 +292,12 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
 
       let flagged = q.flaggedIssue ? String(q.flaggedIssue).trim() : undefined;
 
-      if (!Number.isFinite(maxM) || maxM <= 0) {
+      const isParentHeader = Boolean(q.isParentHeader);
+      if (!isParentHeader && (!Number.isFinite(maxM) || maxM <= 0)) {
         maxM = 0;
-        flagged = flagged || 'Missing maximum marks in question paper - instructor review required.';
+        flagged = flagged || 'Missing maximum marks in question paper - faculty review required.';
         hasFlaggedIssues = true;
         warnings.push(`Question ${completeId}: Missing explicit maximum marks.`);
-      } else {
-        computedSum += maxM;
       }
 
       if (seenIds.has(completeId)) {
@@ -302,6 +315,11 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       canonicalQuestions.push({
         questionId: completeId,
         subquestionId: q.subquestionId ? String(q.subquestionId).trim() : undefined,
+        parentQuestionId: q.parentQuestionId ? String(q.parentQuestionId).trim() : undefined,
+        section: q.section ? String(q.section).trim() : undefined,
+        isAlternative: Boolean(q.isAlternative),
+        alternativeGroup: q.alternativeGroup ? String(q.alternativeGroup).trim() : undefined,
+        isParentHeader,
         questionText: q.questionText ? String(q.questionText).trim() : undefined,
         maxMarks: maxM,
         referenceAnswer: String(q.referenceAnswer || q.expectedAnswer || 'Suggested model answer to be reviewed.').trim(),
@@ -314,15 +332,24 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       });
     }
 
-    const calculatedTotal = totalMaxMarks && totalMaxMarks > 0 ? totalMaxMarks : computedSum;
+    const paperPrintedMax = Number(parsedResult.printedMaxMarks) > 0
+      ? Number(parsedResult.printedMaxMarks)
+      : (totalMaxMarks && totalMaxMarks > 0
+        ? totalMaxMarks
+        : (Number(parsedResult.totalMaxMarks) > 0 ? Number(parsedResult.totalMaxMarks) : undefined));
 
-    // Check if metadata total marks mismatches computed sum
-    if (totalMaxMarks && totalMaxMarks > 0 && computedSum > 0 && Math.abs(totalMaxMarks - computedSum) > 0.05) {
-      warnings.push(`Total marks specified (${totalMaxMarks}) differs from sum of extracted questions (${computedSum}).`);
+    const marksValidation: MarksValidationResult = calculateCanonicalKeyMarks(canonicalQuestions, paperPrintedMax);
+
+    if (marksValidation.hasDiscrepancy) {
       hasFlaggedIssues = true;
+      for (const msg of marksValidation.discrepancyMessages) {
+        if (!warnings.includes(msg)) {
+          warnings.push(msg);
+        }
+      }
     }
 
-    const initialStatus: AnswerKeyStatus = hasFlaggedIssues ? 'needs_review' : 'draft';
+    const initialStatus: AnswerKeyStatus = (hasFlaggedIssues || marksValidation.hasDiscrepancy) ? 'needs_review' : 'draft';
 
     const canonicalKey: CanonicalAnswerKey = {
       id,
@@ -333,7 +360,9 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       sourceMode: 'ai_generated',
       version: 1,
       status: initialStatus,
-      totalMaxMarks: calculatedTotal,
+      printedMaxMarks: paperPrintedMax,
+      totalMaxMarks: marksValidation.calculatedTotalMarks,
+      marksValidation,
       questions: canonicalQuestions,
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
@@ -350,7 +379,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     const valDurationMs = Date.now() - valStart;
     const totalDurationMs = Date.now() - totalStart;
     console.log(
-      `[AnswerKeyService][${correlationId}][Stage 4: Validation Complete] Validated ${canonicalQuestions.length} canonical questions in ${valDurationMs}ms (totalMaxMarks: ${calculatedTotal}, computedSum: ${computedSum}, status: ${initialStatus}). Total pipeline elapsed: ${totalDurationMs}ms.`
+      `[AnswerKeyService][${correlationId}][Stage 4: Validation Complete] Validated ${canonicalQuestions.length} canonical questions in ${valDurationMs}ms (totalMaxMarks: ${canonicalKey.totalMaxMarks}, printedMax: ${canonicalKey.printedMaxMarks}, status: ${initialStatus}). Total pipeline elapsed: ${totalDurationMs}ms.`
     );
     return canonicalKey;
   }
@@ -525,7 +554,6 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     const warnings: string[] = Array.isArray(parsedResult.warnings) ? parsedResult.warnings : [];
     const seenIds = new Set<string>();
     let hasFlaggedIssues = false;
-    let computedSum = 0;
 
     for (let i = 0; i < rawQuestions.length; i++) {
       const q = rawQuestions[i];
@@ -534,13 +562,12 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
 
       let flagged = q.flaggedIssue ? String(q.flaggedIssue).trim() : undefined;
 
-      if (!Number.isFinite(maxM) || maxM <= 0) {
+      const isParentHeader = Boolean(q.isParentHeader);
+      if (!isParentHeader && (!Number.isFinite(maxM) || maxM <= 0)) {
         maxM = 0;
         flagged = flagged || 'Missing or invalid maximum marks in uploaded answer key.';
         hasFlaggedIssues = true;
         warnings.push(`Question ${completeId}: Missing maximum marks.`);
-      } else {
-        computedSum += maxM;
       }
 
       if (seenIds.has(completeId)) {
@@ -558,6 +585,11 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       canonicalQuestions.push({
         questionId: completeId,
         subquestionId: q.subquestionId ? String(q.subquestionId).trim() : undefined,
+        parentQuestionId: q.parentQuestionId ? String(q.parentQuestionId).trim() : undefined,
+        section: q.section ? String(q.section).trim() : undefined,
+        isAlternative: Boolean(q.isAlternative),
+        alternativeGroup: q.alternativeGroup ? String(q.alternativeGroup).trim() : undefined,
+        isParentHeader,
         questionText: q.questionText ? String(q.questionText).trim() : undefined,
         maxMarks: maxM,
         referenceAnswer: String(q.referenceAnswer || q.expectedAnswer || 'Model answer from uploaded document.').trim(),
@@ -570,14 +602,24 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       });
     }
 
-    const calculatedTotal = totalMaxMarks && totalMaxMarks > 0 ? totalMaxMarks : computedSum;
+    const paperPrintedMax = Number(parsedResult.printedMaxMarks) > 0
+      ? Number(parsedResult.printedMaxMarks)
+      : (totalMaxMarks && totalMaxMarks > 0
+        ? totalMaxMarks
+        : (Number(parsedResult.totalMaxMarks) > 0 ? Number(parsedResult.totalMaxMarks) : undefined));
 
-    if (totalMaxMarks && totalMaxMarks > 0 && computedSum > 0 && Math.abs(totalMaxMarks - computedSum) > 0.05) {
-      warnings.push(`Total marks specified (${totalMaxMarks}) differs from sum of extracted questions (${computedSum}).`);
+    const marksValidation: MarksValidationResult = calculateCanonicalKeyMarks(canonicalQuestions, paperPrintedMax);
+
+    if (marksValidation.hasDiscrepancy) {
       hasFlaggedIssues = true;
+      for (const msg of marksValidation.discrepancyMessages) {
+        if (!warnings.includes(msg)) {
+          warnings.push(msg);
+        }
+      }
     }
 
-    const initialStatus: AnswerKeyStatus = hasFlaggedIssues ? 'needs_review' : 'draft';
+    const initialStatus: AnswerKeyStatus = (hasFlaggedIssues || marksValidation.hasDiscrepancy) ? 'needs_review' : 'draft';
 
     const canonicalKey: CanonicalAnswerKey = {
       id,
@@ -588,7 +630,9 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       sourceMode: 'uploaded',
       version: 1,
       status: initialStatus,
-      totalMaxMarks: calculatedTotal,
+      printedMaxMarks: paperPrintedMax,
+      totalMaxMarks: marksValidation.calculatedTotalMarks,
+      marksValidation,
       questions: canonicalQuestions,
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
@@ -668,13 +712,12 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       }
     }
 
-    // Recalculate total if questions changed
-    let sum = 0;
-    for (const q of updatedQuestions) {
-      if (Number.isFinite(q.maxMarks) && q.maxMarks > 0) {
-        sum += q.maxMarks;
-      }
-    }
+    const printedMaxMarks = updates.printedMaxMarks !== undefined
+      ? updates.printedMaxMarks
+      : existing.printedMaxMarks;
+
+    // Deterministically calculate question totals, section totals, and discrepancy
+    const marksValidation = calculateCanonicalKeyMarks(updatedQuestions, printedMaxMarks);
 
     const updatedKey: CanonicalAnswerKey = {
       ...existing,
@@ -682,7 +725,9 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       id: existing.id,
       version: newVersion,
       status: newStatus,
-      totalMaxMarks: updates.totalMaxMarks || sum || existing.totalMaxMarks,
+      printedMaxMarks,
+      totalMaxMarks: marksValidation.calculatedTotalMarks,
+      marksValidation,
       questions: updatedQuestions,
       metadata: {
         ...existing.metadata,
@@ -719,7 +764,6 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       throw new AnswerKeyValidationError('Cannot approve an answer key with no questions.');
     }
 
-    let calculatedSum = 0;
     const seenIds = new Set<string>();
     const approvedQuestions: CanonicalQuestionKey[] = [];
     for (let idx = 0; idx < existing.questions.length; idx++) {
@@ -735,7 +779,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       seenIds.add(completeId);
 
       const maxM = Number(q.maxMarks);
-      if (!Number.isFinite(maxM) || maxM <= 0) {
+      if (!q.isParentHeader && (!Number.isFinite(maxM) || maxM <= 0)) {
         throw new AnswerKeyValidationError(
           `Cannot approve answer key: Question ${completeId} has invalid or missing maximum marks (${q.maxMarks}). All questions must have positive maximum marks before approval.`
         );
@@ -747,20 +791,28 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         );
       }
 
-      calculatedSum += maxM;
-
       approvedQuestions.push({
         ...q,
         questionId: completeId,
       });
     }
 
+    // Deterministically validate marks against printed maximum marks
+    const marksValidation = calculateCanonicalKeyMarks(existing.questions, existing.printedMaxMarks);
+    if (marksValidation.hasDiscrepancy) {
+      const details = marksValidation.discrepancyMessages.join('; ');
+      throw new AnswerKeyValidationError(
+        `Cannot approve answer key: Unresolved marks discrepancy detected (${details}). Faculty must correct question marks or printed maximum marks in review before approval.`
+      );
+    }
+
     const approvedKey: CanonicalAnswerKey = {
       ...existing,
       status: 'approved',
-      totalMaxMarks: calculatedSum,
+      totalMaxMarks: marksValidation.calculatedTotalMarks,
+      marksValidation,
       questions: approvedQuestions,
-      warnings: undefined, // Cleared on instructor sign-off
+      warnings: undefined, // Cleared on faculty sign-off
       metadata: {
         ...existing.metadata,
         updatedAt: Date.now(),

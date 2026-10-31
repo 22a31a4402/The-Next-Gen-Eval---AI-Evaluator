@@ -27,6 +27,83 @@ export function getClientAuthToken(): string {
     return DEFAULT_CLIENT_TOKEN;
   }
 }
+/**
+ * Safely inspects response headers and content before parsing JSON.
+ * Protects against upstream HTML error pages (e.g. 503 Service Unavailable, SPA fallbacks, proxy 502/504)
+ * and guarantees a clear, structured, retryable error rather than SyntaxError: Unexpected token '<'.
+ */
+export async function safeParseResponseJson<T = any>(
+  res: Response,
+  endpointDescription = 'API'
+): Promise<T> {
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  const text = await res.text();
+
+  const isHtml =
+    contentType.includes('text/html') ||
+    text.trimStart().startsWith('<!doctype') ||
+    text.trimStart().startsWith('<!DOCTYPE') ||
+    text.trimStart().startsWith('<html') ||
+    text.trimStart().startsWith('<HTML');
+
+  if (isHtml) {
+    const titleMatch = text.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const htmlTitle = titleMatch ? titleMatch[1].trim() : '';
+    const is503 =
+      res.status === 503 ||
+      htmlTitle.includes('503') ||
+      htmlTitle.toLowerCase().includes('unavailable') ||
+      htmlTitle.toLowerCase().includes('high demand') ||
+      text.includes('503 Service') ||
+      text.toLowerCase().includes('high demand');
+    const is502 = res.status === 502 || htmlTitle.includes('502') || htmlTitle.toLowerCase().includes('bad gateway');
+    const is504 = res.status === 504 || htmlTitle.includes('504') || htmlTitle.toLowerCase().includes('gateway timeout');
+
+    let errorMsg: string;
+    let category: string;
+    let retryable = false;
+
+    if (is503) {
+      category = 'Gemini Server Temporarily Busy (503)';
+      errorMsg = 'Google Gemini service is temporarily experiencing high traffic (503). Click "Retry" to process this script again.';
+      retryable = true;
+    } else if (is502 || is504) {
+      category = 'Server Gateway Error';
+      errorMsg = `Server gateway temporarily unavailable (${res.status}). Click "Retry" to process again.`;
+      retryable = true;
+    } else if (res.status === 404) {
+      category = 'Not Found';
+      errorMsg = `${endpointDescription} endpoint not found (HTTP 404).`;
+    } else {
+      category = 'Unexpected Server Response';
+      errorMsg = `Received HTML response instead of JSON from ${endpointDescription} (HTTP ${res.status}${htmlTitle ? `: ${htmlTitle}` : ''}). Click "Retry" to process again.`;
+      retryable = res.status >= 500;
+    }
+
+    const err: any = new Error(errorMsg);
+    err.statusCode = res.status;
+    err.category = category;
+    err.retryable = retryable;
+    err.isHtmlResponse = true;
+    throw err;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch (parseError: any) {
+    const is503 = res.status === 503;
+    const err: any = new Error(
+      is503
+        ? 'Google Gemini service is temporarily experiencing high traffic (503). Click "Retry" to process this script again.'
+        : `Invalid JSON received from ${endpointDescription} (HTTP ${res.status}): ${parseError.message}`
+    );
+    err.statusCode = res.status;
+    err.category = is503 ? 'Gemini Server Temporarily Busy (503)' : 'Invalid JSON Response';
+    err.retryable = is503 || res.status >= 500;
+    throw err;
+  }
+}
+
 
 /**
  * Submits an evaluation request to the dedicated backend and monitors progress
@@ -98,13 +175,13 @@ export const generateStructuredFeedback = async (
   });
 
   if (!createRes.ok) {
-    const errData = await createRes.json().catch(() => ({}));
+    const errData = await safeParseResponseJson<any>(createRes, 'Evaluation Job Creation').catch((e) => ({ error: e.message }));
     throw new Error(
       errData.error || `Server responded with status ${createRes.status} while creating evaluation job.`
     );
   }
 
-  const { jobId } = await createRes.json();
+  const { jobId } = await safeParseResponseJson<{ jobId: string }>(createRes, 'Evaluation Job Creation');
   if (!jobId) {
     throw new Error('Invalid server response: No job ID returned by evaluation backend.');
   }
@@ -162,7 +239,7 @@ export const generateStructuredFeedback = async (
           return;
         }
 
-        const data = await res.json();
+        const data = await safeParseResponseJson<any>(res, 'Evaluation Status');
         onProgress?.(data.progressPercent || 20, data.currentStepMessage || 'Evaluating...');
 
         if (data.status === 'completed') {
@@ -173,13 +250,18 @@ export const generateStructuredFeedback = async (
             },
           });
           if (resultRes.ok) {
-            const resultData = await resultRes.json();
+            const resultData = await safeParseResponseJson<any>(resultRes, 'Evaluation Results');
             settleSuccess(resultData.report);
           } else {
-            settleFailure(new Error('Failed to retrieve completed evaluation report.'));
+            const errData = await safeParseResponseJson<any>(resultRes, 'Evaluation Results').catch((e) => ({ error: e.message }));
+            settleFailure(new Error(errData.error || 'Failed to retrieve completed evaluation report.'));
           }
         } else if (data.status === 'failed' || data.status === 'needs_review') {
-          settleFailure(new Error(data.error || 'Evaluation failed on backend or requires review.'));
+          const failErr: any = new Error(data.error || 'Evaluation failed on backend or requires review.');
+          failErr.statusCode = data.statusCode || (data.category?.includes('503') ? 503 : undefined);
+          failErr.category = data.category;
+          failErr.retryable = data.retryable !== undefined ? data.retryable : (failErr.statusCode === 503);
+          settleFailure(failErr);
         }
       } catch (err: any) {
         console.warn('[ClientService] Polling check:', err?.message || err);
@@ -274,12 +356,18 @@ export const parseActionableError = (
   }
 
   let category = 'Academic Evaluation Error';
-  if (statusCode === 429 || /quota|rate limit|resource_exhausted/i.test(rawMsg)) {
+  if (
+    /unexpected token '<'|<html|<!doctype|is not valid json/i.test(rawMsg) ||
+    statusCode === 503 ||
+    /high demand|unavailable|503/i.test(rawMsg) ||
+    (err as any)?.isHtmlResponse
+  ) {
+    category = 'Gemini Server Temporarily Busy (503)';
+    rawMsg = 'Google Gemini service is temporarily experiencing high traffic (503). Click "Retry" to process this script again.';
+    statusCode = 503;
+  } else if (statusCode === 429 || /quota|rate limit|resource_exhausted/i.test(rawMsg)) {
     category = 'API Quota / Rate Limit Exceeded';
     rawMsg = 'Gemini API rate limit or quota reached. Please wait a moment before trying again.';
-  } else if (statusCode === 503 || /high demand|unavailable|503/i.test(rawMsg)) {
-    category = 'Server Temporarily Busy (503)';
-    rawMsg = 'Evaluation service is experiencing high demand. Retrying now...';
   } else if (statusCode === 401 || statusCode === 403 || /unauthorized|forbidden|permission/i.test(rawMsg)) {
     category = 'Authentication Error';
     rawMsg = 'Invalid or missing authentication credentials. Please refresh and log in.';
@@ -341,10 +429,10 @@ export async function generateAnswerKeyApi(params: {
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
+    const err = await safeParseResponseJson<any>(res, 'Generate Answer Key').catch((e) => ({ error: e.message }));
     throw new Error(err.error || `Failed to generate answer key (${res.status})`);
   }
-  return res.json();
+  return safeParseResponseJson<CanonicalAnswerKey>(res, 'Generate Answer Key');
 }
 
 export async function extractAnswerKeyApi(params: {
@@ -386,10 +474,10 @@ export async function extractAnswerKeyApi(params: {
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
+    const err = await safeParseResponseJson<any>(res, 'Extract Answer Key').catch((e) => ({ error: e.message }));
     throw new Error(err.error || `Failed to extract answer key (${res.status})`);
   }
-  return res.json();
+  return safeParseResponseJson<CanonicalAnswerKey>(res, 'Extract Answer Key');
 }
 
 export async function listAnswerKeysApi(token?: string): Promise<CanonicalAnswerKey[]> {
@@ -397,8 +485,11 @@ export async function listAnswerKeysApi(token?: string): Promise<CanonicalAnswer
   const res = await fetch('/api/answer-keys', {
     headers: { Authorization: `Bearer ${authToken}` },
   });
-  if (!res.ok) throw new Error(`Failed to list answer keys (${res.status})`);
-  const data = await res.json();
+  if (!res.ok) {
+    const err = await safeParseResponseJson<any>(res, 'List Answer Keys').catch((e) => ({ error: e.message }));
+    throw new Error(err.error || `Failed to list answer keys (${res.status})`);
+  }
+  const data = await safeParseResponseJson<any>(res, 'List Answer Keys');
   return data.answerKeys || [];
 }
 
@@ -407,8 +498,11 @@ export async function getAnswerKeyApi(id: string, token?: string): Promise<Canon
   const res = await fetch(`/api/answer-keys/${id}`, {
     headers: { Authorization: `Bearer ${authToken}` },
   });
-  if (!res.ok) throw new Error(`Failed to fetch answer key (${res.status})`);
-  return res.json();
+  if (!res.ok) {
+    const err = await safeParseResponseJson<any>(res, 'Fetch Answer Key').catch((e) => ({ error: e.message }));
+    throw new Error(err.error || `Failed to fetch answer key (${res.status})`);
+  }
+  return safeParseResponseJson<CanonicalAnswerKey>(res, 'Fetch Answer Key');
 }
 
 export async function updateAnswerKeyApi(
@@ -426,10 +520,10 @@ export async function updateAnswerKeyApi(
     body: JSON.stringify(updates),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
+    const err = await safeParseResponseJson<any>(res, 'Update Answer Key').catch((e) => ({ error: e.message }));
     throw new Error(err.error || `Failed to update answer key (${res.status})`);
   }
-  return res.json();
+  return safeParseResponseJson<CanonicalAnswerKey>(res, 'Update Answer Key');
 }
 
 export async function approveAnswerKeyApi(
@@ -447,10 +541,10 @@ export async function approveAnswerKeyApi(
     body: JSON.stringify({ notes }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
+    const err = await safeParseResponseJson<any>(res, 'Approve Answer Key').catch((e) => ({ error: e.message }));
     throw new Error(err.error || `Failed to approve answer key (${res.status})`);
   }
-  return res.json();
+  return safeParseResponseJson<{ message: string; answerKey: CanonicalAnswerKey }>(res, 'Approve Answer Key');
 }
 
 export async function deleteAnswerKeyApi(id: string, token?: string): Promise<boolean> {

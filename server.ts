@@ -114,13 +114,27 @@ app.use(healthRouter);
 app.use('/api/evaluations', evaluationsRouter);
 app.use('/api/answer-keys', answerKeysRouter);
 
+// Explicit 404 handler for unmatched API routes to ensure JSON response instead of HTML
+app.all('/api/*', (req: Request, res: Response) => {
+  res.status(404).setHeader('Content-Type', 'application/json').json({
+    error: `API endpoint not found: ${req.method} ${req.path}`,
+    category: 'Not Found',
+    retryable: false,
+    statusCode: 404,
+  });
+});
+
 // Global Error Handler
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   // Prevent logging full sensitive bodies
   console.error('[Server Error]', err?.message || err);
-  res.status(err.status || 500).json({
+  const status = typeof err.statusCode === 'number' ? err.statusCode : (typeof err.status === 'number' ? err.status : 500);
+  const is503 = status === 503 || /503|unavailable|high demand/i.test(err?.message || '');
+  res.status(is503 ? 503 : status).setHeader('Content-Type', 'application/json').json({
     error: err.message || 'Internal Server Error',
-    category: 'Backend Processing Error',
+    category: is503 ? 'Gemini Server Temporarily Busy (503)' : (err.category || 'Backend Processing Error'),
+    retryable: is503 || err.retryable || false,
+    statusCode: is503 ? 503 : status,
   });
 });
 

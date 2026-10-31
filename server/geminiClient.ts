@@ -113,6 +113,7 @@ export const canonicalAnswerKeySchema = {
   properties: {
     examTitle: { type: Type.STRING },
     totalMaxMarks: { type: Type.NUMBER },
+    printedMaxMarks: { type: Type.NUMBER },
     warnings: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
@@ -124,6 +125,11 @@ export const canonicalAnswerKeySchema = {
         properties: {
           questionId: { type: Type.STRING },
           subquestionId: { type: Type.STRING },
+          parentQuestionId: { type: Type.STRING },
+          section: { type: Type.STRING },
+          isAlternative: { type: Type.BOOLEAN },
+          alternativeGroup: { type: Type.STRING },
+          isParentHeader: { type: Type.BOOLEAN },
           questionText: { type: Type.STRING },
           maxMarks: { type: Type.NUMBER },
           referenceAnswer: { type: Type.STRING },
@@ -177,6 +183,8 @@ export const isRetryableError = (error: any): boolean => {
   if (msg.includes('500') || msg.includes('internal error')) return true;
   if (msg.includes('429') || msg.includes('resource_exhausted') || msg.includes('rate limit') || msg.includes('quota')) return true;
   if (msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('timeout') || msg.includes('network error') || msg.includes('fetch failed')) return true;
+  // Detect HTML responses and JSON syntax errors when upstream proxy/Gemini returns HTML 503
+  if (msg.includes('<!doctype') || msg.includes('<html') || (msg.includes('unexpected token') && msg.includes('<')) || msg.includes('is not valid json')) return true;
 
   return false;
 };
@@ -559,7 +567,22 @@ export const callGeminiWithFallback = async (
     }
   }
 
-  throw new Error(
+  const is503 =
+    candidateModels.every((m) => isRetryableError(lastError)) ||
+    lastError?.statusCode === 503 ||
+    lastError?.status === 503 ||
+    isRetryableError(lastError) ||
+    /503|high demand|unavailable|overloaded/i.test(lastError?.message || '') ||
+    /<!doctype|<html|unexpected token '<'|is not valid json/i.test(lastError?.message || '');
+
+  const finalError: any = new Error(
     `Evaluation failed across candidate models (${candidateModels.join(', ')}). Last error: ${lastError?.message || lastError}`
   );
+  finalError.name = 'GeminiExhaustedError';
+  finalError.statusCode = is503 ? 503 : 500;
+  finalError.category = is503 ? 'Gemini Server Temporarily Busy (503)' : 'Evaluation Failure';
+  finalError.retryable = is503;
+  finalError.candidateModels = candidateModels;
+  finalError.lastError = lastError;
+  throw finalError;
 };

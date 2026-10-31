@@ -267,6 +267,9 @@ evaluationsRouter.get('/:id', (req: Request, res: Response): void => {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     error: job.error,
+    category: job.errorCategory,
+    statusCode: job.statusCode,
+    retryable: job.isRetryable,
     metrics: job.metrics,
     hasReport: Boolean(job.report),
   });
@@ -291,8 +294,22 @@ evaluationsRouter.get('/:id/results', (req: Request, res: Response): void => {
     return;
   }
 
+  if (job.status === 'failed') {
+    const is503 = job.statusCode === 503 || /503|unavailable|high demand/i.test(job.error || '');
+    const status = is503 ? 503 : 422;
+    res.status(status).setHeader('Content-Type', 'application/json').json({
+      error: job.error || 'Evaluation failed on backend.',
+      category: job.errorCategory || (is503 ? 'Gemini Server Temporarily Busy (503)' : 'Evaluation Failure'),
+      status: 'failed',
+      retryable: job.isRetryable !== undefined ? job.isRetryable : is503,
+      statusCode: status,
+      jobId: job.id,
+    });
+    return;
+  }
+
   if (job.status !== 'completed' || !job.report) {
-    res.status(409).json({
+    res.status(409).setHeader('Content-Type', 'application/json').json({
       error: `Report is not ready. Current job status: ${job.status}`,
       status: job.status,
       progressPercent: job.progressPercent,

@@ -345,10 +345,21 @@ export class EvaluationQueue extends EventEmitter {
       if (err?.name === 'ValidationError') {
         job.status = 'needs_review';
         job.error = `Academic Validation Discrepancy: ${err.message}`;
+        job.errorCategory = 'Academic Validation Discrepancy';
+        job.statusCode = 422;
+        job.isRetryable = false;
         job.currentStepMessage = `Needs Review: ${err.message}`;
       } else {
+        const is503 =
+          err?.statusCode === 503 ||
+          err?.status === 503 ||
+          /503|unavailable|high demand|overloaded/i.test(err?.message || '') ||
+          /<!doctype|<html|unexpected token '<'|is not valid json/i.test(err?.message || '');
         job.status = 'failed';
         job.error = err?.message || 'Unknown evaluation failure';
+        job.errorCategory = err?.category || (is503 ? 'Gemini Server Temporarily Busy (503)' : 'Evaluation Failure');
+        job.statusCode = is503 ? 503 : (err?.statusCode || err?.status || 500);
+        job.isRetryable = err?.retryable !== undefined ? err.retryable : is503;
         job.currentStepMessage = `Failed: ${job.error}`;
       }
 

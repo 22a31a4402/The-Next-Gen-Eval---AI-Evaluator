@@ -67,6 +67,11 @@ export function getCompleteQuestionIdentifier(q?: {
 export interface CanonicalQuestionKey {
   questionId: string;
   subquestionId?: string;
+  parentQuestionId?: string;
+  section?: string;
+  isAlternative?: boolean;
+  alternativeGroup?: string;
+  isParentHeader?: boolean;
   questionText?: string;
   maxMarks: number;
   referenceAnswer: string;
@@ -76,6 +81,161 @@ export interface CanonicalQuestionKey {
   diagramReferences?: string[];
   confidence?: number;
   flaggedIssue?: string;
+}
+
+export interface SectionMarksSummary {
+  sectionName: string;
+  questionCount: number;
+  printedMaxMarks?: number;
+  calculatedTotalMarks: number;
+}
+
+export interface MarksValidationResult {
+  hasDiscrepancy: boolean;
+  printedMaxMarks?: number;
+  calculatedTotalMarks: number;
+  difference: number;
+  message?: string;
+  discrepancyMessages: string[];
+  offendingQuestions: string[];
+  sectionTotals: Record<string, number>;
+  sections: SectionMarksSummary[];
+}
+
+export function calculateCanonicalKeyMarks(
+  questions: CanonicalQuestionKey[],
+  printedMaxMarks?: number
+): MarksValidationResult {
+  const sectionTotals: Record<string, number> = {};
+  const sectionCounts: Record<string, number> = {};
+  const alternativeGroupMax: Record<string, number> = {};
+  const alternativeGroupSeen: Set<string> = new Set();
+  const offendingQuestions: string[] = [];
+  const discrepancyMessages: string[] = [];
+
+  const parentIds = new Set<string>();
+  for (const q of questions) {
+    if (q.parentQuestionId) {
+      parentIds.add(q.parentQuestionId.trim());
+    }
+    const qId = q.questionId || "";
+    const match = qId.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
+    if (match) {
+      const parentCandidate = match[1];
+      if (questions.some((other) => other.questionId === parentCandidate)) {
+        parentIds.add(parentCandidate);
+      }
+    }
+  }
+
+  for (const q of questions) {
+    if (q.isAlternative && q.alternativeGroup) {
+      const grp = q.alternativeGroup.trim();
+      const m = Number(q.maxMarks) || 0;
+      alternativeGroupMax[grp] = Math.max(alternativeGroupMax[grp] || 0, m);
+    }
+  }
+
+  let calculatedGrandTotal = 0;
+
+  for (const q of questions) {
+    const sec = (q.section || "General").trim();
+    if (!sectionTotals[sec]) {
+      sectionTotals[sec] = 0;
+      sectionCounts[sec] = 0;
+    }
+    sectionCounts[sec]++;
+
+    const qId = (q.questionId || "").trim();
+    const marks = Number(q.maxMarks) || 0;
+
+    const isParentContainer = q.isParentHeader || parentIds.has(qId);
+    if (isParentContainer) {
+      const childQuestions = questions.filter(
+        (child) =>
+          child.parentQuestionId === qId ||
+          (child.questionId !== qId && (
+            child.questionId.startsWith(qId + ".") ||
+            child.questionId.startsWith(qId + "(") ||
+            child.questionId.startsWith(qId + "-") ||
+            child.questionId.startsWith(qId + "_")
+          ))
+      );
+      const childMarksSum = childQuestions.reduce((s, c) => s + (Number(c.maxMarks) || 0), 0);
+      if (childMarksSum > 0) {
+        continue;
+      }
+    }
+
+    if (!Number.isFinite(marks) || marks <= 0) {
+      offendingQuestions.push(qId);
+      discrepancyMessages.push("Question " + qId + " has missing or unassigned marks.");
+    }
+
+    if (q.isAlternative && q.alternativeGroup) {
+      const grp = q.alternativeGroup.trim();
+      if (!alternativeGroupSeen.has(grp)) {
+        alternativeGroupSeen.add(grp);
+        const grpMarks = alternativeGroupMax[grp] || marks;
+        sectionTotals[sec] = parseFloat((sectionTotals[sec] + grpMarks).toFixed(2));
+        calculatedGrandTotal = parseFloat((calculatedGrandTotal + grpMarks).toFixed(2));
+      }
+      continue;
+    }
+
+    sectionTotals[sec] = parseFloat((sectionTotals[sec] + marks).toFixed(2));
+    calculatedGrandTotal = parseFloat((calculatedGrandTotal + marks).toFixed(2));
+  }
+
+  const sections: SectionMarksSummary[] = Object.keys(sectionTotals).map((name) => ({
+    sectionName: name,
+    questionCount: sectionCounts[name] || 0,
+    calculatedTotalMarks: sectionTotals[name],
+  }));
+
+  let hasDiscrepancy = discrepancyMessages.length > 0;
+  let difference = 0;
+  let message = undefined;
+
+  if (typeof printedMaxMarks === "number" && printedMaxMarks > 0) {
+    difference = parseFloat((calculatedGrandTotal - printedMaxMarks).toFixed(2));
+    if (Math.abs(difference) > 0.05) {
+      hasDiscrepancy = true;
+      if (difference > 0) {
+        for (const q of questions) {
+          const text = ((q.questionText || "") + " " + (q.referenceAnswer || "")).toLowerCase();
+          if ((text.includes(" or ") || text.includes("either") || text.includes("choice")) && !q.isAlternative) {
+            offendingQuestions.push(q.questionId);
+          }
+          if (parentIds.has(q.questionId) && Number(q.maxMarks) > 0 && !q.isParentHeader) {
+            offendingQuestions.push(q.questionId);
+          }
+        }
+        message = "Question paper explicitly states " + printedMaxMarks + " maximum marks, but extracted questions total " + calculatedGrandTotal + " marks (+" + difference + " discrepancy). Check alternative (OR) choices or parent sub-questions.";
+        discrepancyMessages.unshift(message);
+      } else {
+        for (const q of questions) {
+          if (!q.maxMarks || Number(q.maxMarks) <= 0) {
+            offendingQuestions.push(q.questionId);
+          }
+        }
+        message = "Question paper explicitly states " + printedMaxMarks + " maximum marks, but extracted questions total only " + calculatedGrandTotal + " marks (" + difference + " discrepancy). Check for missing questions or unassigned marks.";
+        discrepancyMessages.unshift(message);
+      }
+    }
+  }
+
+  return {
+    hasDiscrepancy,
+    printedMaxMarks,
+    calculatedTotalMarks: calculatedGrandTotal,
+    difference,
+    message,
+    discrepancyMessages,
+    offendingQuestions: Array.from(new Set(offendingQuestions)),
+    sectionTotals,
+    sections,
+  };
 }
 
 export interface CanonicalAnswerKey {
@@ -88,6 +248,8 @@ export interface CanonicalAnswerKey {
   version: number;
   status: AnswerKeyStatus;
   totalMaxMarks: number;
+  printedMaxMarks?: number;
+  marksValidation?: MarksValidationResult;
   questions: CanonicalQuestionKey[];
   warnings?: string[];
   metadata: {
