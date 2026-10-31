@@ -1,7 +1,10 @@
 node_modules/
 dist/
 .data/
+.env
+.env.local
 *.tmp
 *.log
 .DS_Store
 Thumbs.db
+

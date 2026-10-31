@@ -170,10 +170,21 @@ x-api-key: <token>
 ```
 
 ### 5.2. Configured Roles & Access Permissions
-- **`operator`** (`OPERATOR_API_KEY`): Access to system metrics (`/api/metrics`), detailed readiness (`/ready`), and global cross-institution inspection.
+- **`operator`** (`OPERATOR_API_KEY`): System operator authentication. Required for:
+  - System operational metrics (`GET /api/metrics`)
+  - Detailed diagnostic readiness telemetry (`GET /ready`)
+  - Pruning stale evaluation records (`POST /api/evaluations/prune`)
+  - Tenant-spanning audit ledger and cost summaries (`GET /api/usage/summary`)
+  - Cross-institution inspection to troubleshoot stuck/failed evaluation jobs
+  - *Note:* Distinct from `GEMINI_API_KEY`. Evaluated via constant-time comparison to prevent timing attacks.
 - **`admin`** (`ADMIN_API_KEY`): Full administrative access over all jobs within their institution.
 - **`instructor`** (`INSTRUCTOR_API_KEY`): Create evaluations, stream events, retry failed jobs, view completed reports for institution.
 - **`evaluator`** (`EVALUATOR_API_KEY`): Create evaluations and view reports authored by their own user ID.
+
+> **Security Note on Keys:**
+> - `GEMINI_API_KEY` is strictly for server-side Google GenAI API communication.
+> - `OPERATOR_API_KEY` is strictly for server-side system administration and operator RBAC.
+> - Neither key is ever exposed in client-side bundles, browser storage, or HTTP access logs.
 
 ### 5.3. Rate Limiting & Backpressure
 - In-memory sliding window rate limiter: 120 requests/minute per client context.

@@ -27,7 +27,7 @@ import {
   AnswerKeyStatus,
 } from './types';
 import { UserContext } from './auth';
-import { callGeminiWithFallback } from './geminiClient';
+import { callGeminiWithFallback, canonicalAnswerKeySchema } from './geminiClient';
 import { isVisualEvidenceNeeded } from './documentProcessor';
 import { config } from './config';
 
@@ -127,13 +127,16 @@ export class AnswerKeyService {
       throw new AnswerKeyValidationError('Question paper content (text or visual document) is required.');
     }
 
+    const totalStart = Date.now();
     const correlationId = `ak_gen_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const id = `ak_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
 
-    // Assemble parts for Gemini
+    // STAGE 1: PDF & Document Preparation
+    const prepStart = Date.now();
     const contentsParts: any[] = [];
     const qpText = questionPaper.text ? questionPaper.text.trim() : '';
     const textSufficient = qpText.length >= 50 && !isVisualEvidenceNeeded(questionPaper);
+    const approxDocKb = questionPaper.base64 ? Math.round((questionPaper.base64.length * 3) / 4 / 1024) : 0;
 
     if (textSufficient) {
       // Extracted text is comprehensive and sufficient: optimize token usage
@@ -188,33 +191,25 @@ CRITICAL ACADEMIC INSTRUCTIONS:
 7. If any question refers to or requires a diagram, chart, graph, table, flowchart, circuit, or illustration, list it in diagramReferences.
 8. If any question has ambiguous wording, incomplete instructions, or missing information, flag it explicitly in flaggedIssue.
 
-Return ONLY a valid JSON object matching this schema:
-{
-  "examTitle": "${title}",
-  "totalMaxMarks": number,
-  "warnings": string[],
-  "questions": [
-    {
-      "questionId": string,
-      "subquestionId": string | null,
-      "questionText": string,
-      "maxMarks": number,
-      "referenceAnswer": string,
-      "expectedConcepts": string[],
-      "acceptableAlternatives": string[],
-      "markingCriteria": string[],
-      "diagramReferences": string[],
-      "confidence": number,
-      "flaggedIssue": string | null
-    }
-  ]
-}`,
+Return ONLY a valid JSON object matching the canonicalAnswerKeySchema.`,
     });
 
     const systemInstruction = `You are an expert academic curriculum and examination specialist for Aarshiv AI NextGen Eval.
 Your responsibility is to analyze question papers and generate authoritative, rigorous answer keys across all academic disciplines (Mathematics, Science, Medicine, Engineering, Computer Science, Commerce, Languages, Humanities, and other fields).
 You maintain absolute academic integrity: never fabricate missing marks, faithfully preserve subject-specific content and notation, and always flag ambiguities for human instructor review.
 Output must be strictly raw JSON with no Markdown wrapping.`;
+
+    const prepDurationMs = Date.now() - prepStart;
+    const approxPayloadKb = Math.round(JSON.stringify(contentsParts).length / 1024);
+    console.log(
+      `[AnswerKeyService][${correlationId}][Stage 1: PDF Prep] Prepared "${questionPaper.name}" in ${prepDurationMs}ms (approxDocSize: ${approxDocKb}KB, textChars: ${qpText.length}, visualEvidenceRetained: ${!textSufficient}, requestPayload: ${approxPayloadKb}KB)`
+    );
+
+    // STAGE 2: Gemini Request Dispatch
+    const candidateModels = Array.from(new Set([config.primaryModel, ...config.fallbackModels]));
+    console.log(
+      `[AnswerKeyService][${correlationId}][Stage 2: Gemini Request] Initiating answer key generation across candidate models [${candidateModels.join(', ')}] with canonicalAnswerKeySchema, thinkingBudget=0, timeout=${config.requestTimeoutMs}ms...`
+    );
 
     const geminiResult = await callGeminiWithFallback(
       contentsParts,
@@ -224,9 +219,17 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         jobId: id,
         institutionId: metadata.institutionId,
         pipelineStage: 'answer_key_generation',
+        responseSchema: canonicalAnswerKeySchema,
+        thinkingBudget: 0,
       }
     );
 
+    console.log(
+      `[AnswerKeyService][${correlationId}][Stage 2: Gemini Completed] Response received from model "${geminiResult.modelUsed}" in ${geminiResult.latencyMs}ms. Tokens: in=${geminiResult.inputTokens ?? 'N/A'}/out=${geminiResult.outputTokens ?? 'N/A'}/cached=${geminiResult.cachedInputTokens ?? 'N/A'}, retries=${geminiResult.retries}, fallbacks=${geminiResult.fallbackCallsCount}`
+    );
+
+    // STAGE 3: Response Parsing
+    const parseStart = Date.now();
     let parsedResult: any;
     try {
       const rawReportText = typeof (geminiResult.report as any) === 'string'
@@ -241,9 +244,17 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     }
 
     const rawQuestions: any[] = Array.isArray(parsedResult.questions) ? parsedResult.questions : [];
+    const parseDurationMs = Date.now() - parseStart;
+    console.log(
+      `[AnswerKeyService][${correlationId}][Stage 3: Response Parsing] Parsed JSON response in ${parseDurationMs}ms. Identified ${rawQuestions.length} questions.`
+    );
+
     if (rawQuestions.length === 0) {
       throw new AnswerKeyValidationError('AI model could not identify any questions in the provided question paper.');
     }
+
+    // STAGE 4: Validation & Canonical Normalization
+    const valStart = Date.now();
 
     const canonicalQuestions: CanonicalQuestionKey[] = [];
     const warnings: string[] = Array.isArray(parsedResult.warnings) ? parsedResult.warnings : [];
@@ -318,6 +329,11 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     };
 
     this.saveToDisk(canonicalKey);
+    const valDurationMs = Date.now() - valStart;
+    const totalDurationMs = Date.now() - totalStart;
+    console.log(
+      `[AnswerKeyService][${correlationId}][Stage 4: Validation Complete] Validated ${canonicalQuestions.length} canonical questions in ${valDurationMs}ms (totalMaxMarks: ${calculatedTotal}, computedSum: ${computedSum}, status: ${initialStatus}). Total pipeline elapsed: ${totalDurationMs}ms.`
+    );
     return canonicalKey;
   }
 
@@ -456,6 +472,8 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         jobId: id,
         institutionId: metadata.institutionId,
         pipelineStage: 'answer_key_extraction',
+        responseSchema: canonicalAnswerKeySchema,
+        thinkingBudget: 0,
       }
     );
 

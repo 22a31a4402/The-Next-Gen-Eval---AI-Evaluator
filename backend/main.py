@@ -9,6 +9,7 @@ Strict adherence to:
 """
 
 import asyncio
+import hmac
 import json
 import os
 import time
@@ -62,9 +63,9 @@ def verify_auth_token(authorization: Optional[str] = Header(None), x_api_key: Op
     operator_key = os.environ.get("OPERATOR_API_KEY", "nextgen_op_sec_token_9921")
     instructor_key = os.environ.get("INSTRUCTOR_API_KEY", "nextgen_inst_sec_token_4412")
 
-    if token == operator_key:
+    if hmac.compare_digest(token, operator_key):
         return {"userId": "op_root", "role": "operator", "institutionId": "system_global"}
-    elif token == instructor_key or token.startswith("tkn_"):
+    elif hmac.compare_digest(token, instructor_key) or token.startswith("tkn_"):
         return {"userId": "instructor_user", "role": "instructor", "institutionId": "inst_aarshiv_01"}
 
     raise HTTPException(status_code=401, detail="Unauthorized: Invalid authentication credentials.")
@@ -250,7 +251,8 @@ def readiness_check(authorization: Optional[str] = Header(None)):
     is_operator = False
     operator_key = os.environ.get("OPERATOR_API_KEY", "nextgen_op_sec_token_9921")
     if authorization and authorization.startswith("Bearer "):
-        is_operator = authorization[7:].strip() == operator_key
+        token = authorization[7:].strip()
+        is_operator = hmac.compare_digest(token, operator_key)
 
     if is_operator:
         return {

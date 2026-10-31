@@ -407,6 +407,19 @@ async function runTests() {
   const operatorUser = authenticateRequest(operatorReq);
   assert(operatorUser !== null && operatorUser.role === 'operator', 'Recognizes system operator token with operator role.');
 
+  // Test 3b: Invalid operator token fails safely
+  const badOperatorReq = {
+    headers: { authorization: 'Bearer nextgen_op_sec_token_tampered' },
+  } as unknown as Request;
+  assert(authenticateRequest(badOperatorReq) === null, 'Rejects invalid or tampered operator token.');
+
+  // Test 3c: x-api-key operator header works
+  const apiKeyOperatorReq = {
+    headers: { 'x-api-key': 'nextgen_op_sec_token_9921' },
+  } as unknown as Request;
+  const apiKeyOpUser = authenticateRequest(apiKeyOperatorReq);
+  assert(apiKeyOpUser !== null && apiKeyOpUser.role === 'operator', 'Recognizes operator token supplied via x-api-key header.');
+
   // Test 4: Tenant isolation verification
   const jobTenantA = { institutionId: 'inst_aarshiv_01', createdBy: 'prof_sharma' };
   const userTenantB: UserContext = {

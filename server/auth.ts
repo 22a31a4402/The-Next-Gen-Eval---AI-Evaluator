@@ -11,6 +11,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { config } from './config';
 
 export type UserRole = 'operator' | 'admin' | 'instructor' | 'evaluator';
 
@@ -21,12 +22,26 @@ export interface UserContext {
   name: string;
 }
 
-// Configured API Keys & Tokens from Environment or Secure Defaults
-const OPERATOR_TOKEN = process.env.OPERATOR_API_KEY || 'nextgen_op_sec_token_9921';
-const INSTRUCTOR_TOKEN = process.env.INSTRUCTOR_API_KEY || 'nextgen_inst_sec_token_4412';
-const ADMIN_TOKEN = process.env.ADMIN_API_KEY || 'nextgen_admin_sec_token_7733';
-const EVALUATOR_TOKEN = process.env.EVALUATOR_API_KEY || 'nextgen_eval_sec_token_1188';
-const AUTH_SECRET = process.env.AUTH_SECRET || 'nextgen_auth_secret_key_8841';
+// Configured API Keys & Tokens from Centralized Config
+const OPERATOR_TOKEN = config.operatorApiKey;
+const INSTRUCTOR_TOKEN = config.instructorApiKey;
+const ADMIN_TOKEN = config.adminApiKey;
+const EVALUATOR_TOKEN = config.evaluatorApiKey;
+const AUTH_SECRET = config.authSecret;
+
+if (config.isProduction && (!process.env.OPERATOR_API_KEY || process.env.OPERATOR_API_KEY === 'nextgen_op_sec_token_9921')) {
+  console.warn('[Security Warning] OPERATOR_API_KEY is not explicitly set with a production secret. Ensure a high-entropy secret is configured in the environment.');
+}
+
+/**
+ * Constant-time safe string equality check to prevent timing attacks
+ */
+export function safeTimingEqual(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const hashProvided = crypto.createHash('sha256').update(provided).digest();
+  const hashExpected = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(hashProvided, hashExpected);
+}
 
 // Token lookup table
 const KNOWN_TOKENS = new Map<string, UserContext>([
@@ -103,9 +118,11 @@ export function authenticateRequest(req: Request): UserContext | null {
 
   if (!token) return null;
 
-  // Check static known tokens
-  if (KNOWN_TOKENS.has(token)) {
-    return KNOWN_TOKENS.get(token)!;
+  // Check static known tokens using constant-time comparison to prevent timing attacks
+  for (const [knownToken, userCtx] of KNOWN_TOKENS.entries()) {
+    if (safeTimingEqual(token, knownToken)) {
+      return userCtx;
+    }
   }
 
   // Dynamic token format

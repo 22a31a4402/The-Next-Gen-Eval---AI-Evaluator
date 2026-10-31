@@ -107,6 +107,59 @@ export const evaluationReportSchema = {
   ],
 };
 
+// Response JSON Schema for academic answer key generation
+export const canonicalAnswerKeySchema = {
+  type: Type.OBJECT,
+  properties: {
+    examTitle: { type: Type.STRING },
+    totalMaxMarks: { type: Type.NUMBER },
+    warnings: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+    },
+    questions: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          questionId: { type: Type.STRING },
+          subquestionId: { type: Type.STRING },
+          questionText: { type: Type.STRING },
+          maxMarks: { type: Type.NUMBER },
+          referenceAnswer: { type: Type.STRING },
+          expectedConcepts: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          acceptableAlternatives: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          markingCriteria: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          diagramReferences: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          confidence: { type: Type.NUMBER },
+          flaggedIssue: { type: Type.STRING },
+        },
+        required: [
+          'questionId',
+          'questionText',
+          'maxMarks',
+          'referenceAnswer',
+          'expectedConcepts',
+          'markingCriteria',
+        ],
+      },
+    },
+  },
+  required: ['questions'],
+};
+
 /**
  * Identifies if an error is an eligible transient failure suitable for retry
  */
@@ -139,10 +192,12 @@ export interface GeminiCallOptions {
   dataSourceOverride?: UsageSourceType;
   model?: string;
   candidateModels?: string[];
+  responseSchema?: any;
+  thinkingBudget?: number;
 }
 
 export interface GeminiCallResult {
-  report: EvaluationReport;
+  report: any;
   modelUsed: string;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -196,7 +251,7 @@ export const callGeminiWithFallback = async (
   }
 
   const ai = !mockGenerateFn ? getGeminiClient() : null;
-  const candidateModels = options?.candidateModels || (options?.model ? [options.model, ...config.fallbackModels.filter((m) => m !== options.model)] : [config.primaryModel, ...config.fallbackModels]);
+  const candidateModels = options?.candidateModels || Array.from(new Set(options?.model ? [options.model, ...config.fallbackModels] : [config.primaryModel, ...config.fallbackModels]));
   const jobId = options?.jobId || `job_${correlationId}`;
   const institutionId = options?.institutionId || 'inst_aarshiv_01';
   const pipelineStage = options?.pipelineStage || 'grading';
@@ -305,16 +360,45 @@ export const callGeminiWithFallback = async (
             });
           }
 
+          // Dynamically resolve response schema based on explicit option or pipeline stage
+          const schema =
+            options?.responseSchema !== undefined
+              ? options.responseSchema
+              : pipelineStage === 'answer_key_generation' || pipelineStage === 'answer_key_extraction'
+              ? canonicalAnswerKeySchema
+              : evaluationReportSchema;
+
+          const generateConfig: any = {
+            systemInstruction,
+            temperature: 0,
+            seed: 42,
+            responseMimeType: 'application/json',
+          };
+
+          if (schema) {
+            generateConfig.responseSchema = schema;
+          }
+
+          // Configure thinkingBudget to avoid token bloat on structured outputs
+          if (typeof options?.thinkingBudget === 'number') {
+            generateConfig.thinkingConfig = {
+              thinkingBudget: options.thinkingBudget,
+            };
+          } else if (
+            pipelineStage === 'answer_key_generation' ||
+            pipelineStage === 'answer_key_extraction' ||
+            pipelineStage === 'student_extraction'
+          ) {
+            // For structured extractions & answer keys, set thinkingBudget to 0 to eliminate 4000+ chain-of-thought tokens and cut latency in half
+            generateConfig.thinkingConfig = {
+              thinkingBudget: 0,
+            };
+          }
+
           return await ai!.models.generateContent({
             model: modelName,
             contents: [{ parts: contentsParts }],
-            config: {
-              systemInstruction,
-              temperature: 0,
-              seed: 42,
-              responseMimeType: 'application/json',
-              responseSchema: evaluationReportSchema,
-            },
+            config: generateConfig,
           });
         };
 
@@ -328,14 +412,16 @@ export const callGeminiWithFallback = async (
           throw new Error(`Empty response received from Gemini model ${modelName}`);
         }
 
-        let parsed: EvaluationReport;
+        let parsed: any;
         try {
-          parsed = JSON.parse(text) as EvaluationReport;
+          parsed = JSON.parse(text);
         } catch (jsonErr: any) {
           throw new Error(`Failed to parse Gemini response as JSON: ${jsonErr?.message}`);
         }
 
-        parsed.evaluatedByModel = modelName;
+        if (typeof parsed === 'object' && parsed !== null) {
+          parsed.evaluatedByModel = modelName;
+        }
 
         // Token usage accounting from API metadata
         const usageMeta = (response as any).usageMetadata;

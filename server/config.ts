@@ -2,12 +2,20 @@
  * Centralized Server Configuration for NextGen Eval Dedicated Backend
  */
 
+if (typeof (process as any).loadEnvFile === 'function') {
+  try {
+    (process as any).loadEnvFile();
+  } catch {
+    // Ignore if .env is missing or already loaded
+  }
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   geminiApiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
   // Primary model and fallback chain
   primaryModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-  fallbackModels: ['gemini-flash-latest', 'gemini-3.1-flash-lite'],
+  fallbackModels: ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'],
   // Concurrency & Rate Limiting
   maxConcurrentEvaluations: parseInt(process.env.MAX_CONCURRENT_EVALS || '4', 10),
   maxRetriesPerModel: 2,
@@ -23,4 +31,10 @@ export const config = {
   dataDir: process.env.DATA_DIR || './.data/evaluations',
   // Environment
   isProduction: process.env.NODE_ENV === 'production',
+  // Server-Side Authentication Keys (Distinct from GEMINI_API_KEY)
+  operatorApiKey: process.env.OPERATOR_API_KEY || 'nextgen_op_sec_token_9921',
+  adminApiKey: process.env.ADMIN_API_KEY || 'nextgen_admin_sec_token_7733',
+  instructorApiKey: process.env.INSTRUCTOR_API_KEY || 'nextgen_inst_sec_token_4412',
+  evaluatorApiKey: process.env.EVALUATOR_API_KEY || 'nextgen_eval_sec_token_1188',
+  authSecret: process.env.AUTH_SECRET || 'nextgen_auth_secret_key_8841',
 };
