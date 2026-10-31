@@ -313,9 +313,9 @@ console.log('\nTest 4: Missing or Zero Marks Detection & Flagging');
 }
 
 // -----------------------------------------------------------------------------
-// TEST 5: Answer Key Service Approval Blocking on 80-vs-90 Discrepancy
+// TEST 5: Answer Key Service Discrepancy Logging & Faculty Approval Retention
 // -----------------------------------------------------------------------------
-console.log('\nTest 5: Workflow Approval Blocking on Unresolved Marks Discrepancy');
+console.log('\nTest 5: Marks Discrepancy Logging & Faculty Approval Retention');
 {
   // Create an answer key in the service with 80 printed max marks but 90 extracted marks
   const testKeyId = `test_ak_disc_${Date.now()}`;
@@ -371,16 +371,13 @@ console.log('\nTest 5: Workflow Approval Blocking on Unresolved Marks Discrepanc
   // Save to service
   (answerKeyService as any).cache.set(testKeyId, unapprovedKey);
 
-  let approvalFailedAsExpected = false;
-  try {
-    answerKeyService.approveAnswerKey(testKeyId, facultyUser);
-  } catch (err: any) {
-    approvalFailedAsExpected = true;
-    assert.ok(err instanceof AnswerKeyValidationError, 'Error must be AnswerKeyValidationError');
-    assert.ok(err.message.includes('Unresolved marks discrepancy detected'), 'Error must detail marks discrepancy');
-    console.log(`  ✓ Approval correctly rejected: "${err.message}"`);
-  }
-  assert.strictEqual(approvalFailedAsExpected, true, 'Approval must be blocked when discrepancy exists');
+  // Faculty approves: workflow must NOT be aggressively blocked; faculty retains authority
+  const approved = answerKeyService.approveAnswerKey(testKeyId, facultyUser);
+  assert.strictEqual(approved.status, 'approved', 'Key should be approved');
+  assert.strictEqual(approved.totalMaxMarks, 90, 'Total marks retained');
+  assert.strictEqual(approved.marksValidation?.hasDiscrepancy, true, 'Discrepancy logged in marksValidation');
+  assert.strictEqual(approved.marksValidation?.difference, 10, 'Difference logged as +10');
+  console.log('  ✓ Approval workflow succeeds; discrepancy logged without blocking faculty control.');
 }
 
 // -----------------------------------------------------------------------------

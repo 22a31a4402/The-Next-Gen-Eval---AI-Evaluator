@@ -797,12 +797,11 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       });
     }
 
-    // Deterministically validate marks against printed maximum marks
+    // Deterministically validate marks against printed maximum marks and log discrepancy if present
     const marksValidation = calculateCanonicalKeyMarks(existing.questions, existing.printedMaxMarks);
     if (marksValidation.hasDiscrepancy) {
-      const details = marksValidation.discrepancyMessages.join('; ');
-      throw new AnswerKeyValidationError(
-        `Cannot approve answer key: Unresolved marks discrepancy detected (${details}). Faculty must correct question marks or printed maximum marks in review before approval.`
+      console.warn(
+        `[AnswerKeyService] Answer key ${id} approved by faculty with marks discrepancy (calculated: ${marksValidation.calculatedTotalMarks}, printed: ${marksValidation.printedMaxMarks}): ${marksValidation.discrepancyMessages.join('; ')}`
       );
     }
 
