@@ -24,6 +24,7 @@ import { config } from './config';
 import { evaluationEngine } from './evaluator';
 import { EvaluationJob, EvaluationMode, JobStatus } from './types';
 import { UserContext, verifyJobAccess } from './auth';
+import { evaluationMetadataService } from './evaluationMetadata';
 
 export const MAX_QUEUE_CAPACITY = 50;
 

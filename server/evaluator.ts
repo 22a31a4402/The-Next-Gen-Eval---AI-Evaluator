@@ -26,6 +26,7 @@ import {
 } from './types';
 import { config } from './config';
 import { ACTIVE_PRICING_VERSION } from './pricing';
+import { evaluationMetadataService } from './evaluationMetadata';
 
 export class ValidationError extends Error {
   public code = 'ACADEMIC_VALIDATION_ERROR';
