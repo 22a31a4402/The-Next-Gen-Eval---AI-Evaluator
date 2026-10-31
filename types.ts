@@ -2,6 +2,68 @@
 export type AnswerKeySourceMode = 'ai_generated' | 'uploaded';
 export type AnswerKeyStatus = 'draft' | 'needs_review' | 'approved';
 
+/**
+ * Resolves the complete, unique question identifier for a question item.
+ * Preserves hierarchical numbering (e.g. "1", "1.1", "1.2", "2.1", "2.a", "Section A - 1.1").
+ * Prevents treating sub-questions (e.g. "1.1", "1.2") as their parent number ("1").
+ * Allows parent questions ("1") and their sub-questions ("1.1", "1.2") to coexist.
+ */
+export function getCompleteQuestionIdentifier(q?: {
+  questionId?: string | number | null;
+  subquestionId?: string | number | null;
+  qNo?: string | number | null;
+} | null): string {
+  if (!q) return '';
+
+  const rawId = q.questionId !== undefined && q.questionId !== null
+    ? String(q.questionId).trim()
+    : q.qNo !== undefined && q.qNo !== null
+    ? String(q.qNo).trim()
+    : '';
+
+  const rawSubId = q.subquestionId !== undefined && q.subquestionId !== null
+    ? String(q.subquestionId).trim()
+    : '';
+
+  if (!rawId && !rawSubId) return '';
+  if (!rawSubId) return rawId;
+  if (!rawId) return rawSubId;
+
+  // If rawId already includes rawSubId (e.g. rawId = "1.1" and rawSubId = "1" or "1.1")
+  if (
+    (rawId === rawSubId && /[.\-_\(\)\[\]]/.test(rawId)) ||
+    rawId.endsWith(`.${rawSubId}`) ||
+    rawId.endsWith(`(${rawSubId})`) ||
+    rawId.endsWith(`-${rawSubId}`) ||
+    rawId.endsWith(`_${rawSubId}`)
+  ) {
+    return rawId;
+  }
+
+  // If rawSubId already includes rawId as a prefix (e.g. rawId = "1" and rawSubId = "1.1")
+  if (
+    rawSubId.startsWith(`${rawId}.`) ||
+    rawSubId.startsWith(`${rawId}(`) ||
+    rawSubId.startsWith(`${rawId}-`) ||
+    rawSubId.startsWith(`${rawId}_`)
+  ) {
+    return rawSubId;
+  }
+
+  // Form hierarchical identifier without duplicating delimiters
+  if (
+    rawSubId.startsWith('.') ||
+    rawSubId.startsWith('(') ||
+    rawSubId.startsWith('[') ||
+    rawSubId.startsWith('-') ||
+    rawSubId.startsWith('_')
+  ) {
+    return `${rawId}${rawSubId}`;
+  }
+
+  return `${rawId}.${rawSubId}`;
+}
+
 export interface CanonicalQuestionKey {
   questionId: string;
   subquestionId?: string;

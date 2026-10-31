@@ -25,7 +25,9 @@ import {
   CanonicalQuestionKey,
   AnswerKeySourceMode,
   AnswerKeyStatus,
+  getCompleteQuestionIdentifier,
 } from './types';
+export { getCompleteQuestionIdentifier };
 import { UserContext } from './auth';
 import { callGeminiWithFallback, canonicalAnswerKeySchema } from './geminiClient';
 import { isVisualEvidenceNeeded } from './documentProcessor';
@@ -180,16 +182,17 @@ SUBJECT-INDEPENDENT REQUIREMENTS ACROSS ACADEMIC DISCIPLINES:
   * Medicine & Life Sciences: Preserve physiological pathways, cellular mechanisms, terminology, and labelled illustrations.
 
 CRITICAL ACADEMIC INSTRUCTIONS:
-1. Extract ALL questions and subquestions hierarchically (e.g. "1", "2.a", "2.b", "3").
+1. Extract ALL questions and subquestions hierarchically (e.g. "1", "1.1", "2.a", "3").
 2. Extract the exact explicit maximum marks (maxMarks) specified for each question.
    - If maximum marks are NOT explicitly provided in the question paper, set maxMarks to 0 or null and set flaggedIssue to "Missing maximum marks in question paper - instructor review required".
    - NEVER invent marks or default missing marks to 1!
-3. Provide a suggested comprehensive reference answer for each question, preserving subject-specific notation, equations, diagrams, tables, chemical structures, code, flowcharts, labelled illustrations, and descriptive text.
-4. Extract key expected answer concepts (essential points student must cover).
-5. Extract acceptable alternative answers, methods, or equivalent formulations for fair grading.
-6. Formulate granular marking criteria for partial credit allocation.
-7. If any question refers to or requires a diagram, chart, graph, table, flowchart, circuit, or illustration, list it in diagramReferences.
-8. If any question has ambiguous wording, incomplete instructions, or missing information, flag it explicitly in flaggedIssue.
+3. For each question, provide:
+   - referenceAnswer: concise, high-density authoritative model answer containing all core factual points, steps, formulas, code, or clinical facts without verbose conversational filler.
+   - expectedConcepts: key essential points student must demonstrate.
+   - acceptableAlternatives: valid equivalent methods or formulations for fair grading.
+   - markingCriteria: step-by-step partial credit breakdown.
+   - diagramReferences: name of any required diagrams, illustrations, charts, or schematics.
+   - flaggedIssue: flag any question ambiguity or missing information honestly.
 
 Return ONLY a valid JSON object matching the canonicalAnswerKeySchema.`,
     });
@@ -206,9 +209,13 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
     );
 
     // STAGE 2: Gemini Request Dispatch
-    const candidateModels = Array.from(new Set([config.primaryModel, ...config.fallbackModels]));
+    const candidateModels = Array.from(new Set([config.primaryModel, ...config.fallbackModels]))
+      .filter((m) => m !== 'gemini-3.8-flash' && m !== 'gemini-flash-latest');
+    if (candidateModels.length === 0) candidateModels.push('gemini-2.5-flash');
+
+    const timeoutBudget = config.requestTimeoutMs < 5000 ? config.requestTimeoutMs : Math.max(config.requestTimeoutMs, 120000);
     console.log(
-      `[AnswerKeyService][${correlationId}][Stage 2: Gemini Request] Initiating answer key generation across candidate models [${candidateModels.join(', ')}] with canonicalAnswerKeySchema, thinkingBudget=0, timeout=${config.requestTimeoutMs}ms...`
+      `[AnswerKeyService][${correlationId}][Stage 2: Gemini Request] Initiating answer key generation across candidate models [${candidateModels.join(', ')}] with canonicalAnswerKeySchema, thinkingBudget=0, timeout=${timeoutBudget}ms...`
     );
 
     const geminiResult = await callGeminiWithFallback(
@@ -219,8 +226,10 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         jobId: id,
         institutionId: metadata.institutionId,
         pipelineStage: 'answer_key_generation',
+        candidateModels,
         responseSchema: canonicalAnswerKeySchema,
         thinkingBudget: 0,
+        timeoutMs: timeoutBudget,
       }
     );
 
@@ -258,12 +267,13 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
 
     const canonicalQuestions: CanonicalQuestionKey[] = [];
     const warnings: string[] = Array.isArray(parsedResult.warnings) ? parsedResult.warnings : [];
+    const seenIds = new Set<string>();
     let hasFlaggedIssues = false;
     let computedSum = 0;
 
     for (let i = 0; i < rawQuestions.length; i++) {
       const q = rawQuestions[i];
-      const qId = String(q.questionId || q.qNo || `${i + 1}`).trim();
+      const completeId = getCompleteQuestionIdentifier(q) || `${i + 1}`;
       let maxM = Number(q.maxMarks);
 
       let flagged = q.flaggedIssue ? String(q.flaggedIssue).trim() : undefined;
@@ -272,9 +282,17 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         maxM = 0;
         flagged = flagged || 'Missing maximum marks in question paper - instructor review required.';
         hasFlaggedIssues = true;
-        warnings.push(`Question ${qId}: Missing explicit maximum marks.`);
+        warnings.push(`Question ${completeId}: Missing explicit maximum marks.`);
       } else {
         computedSum += maxM;
+      }
+
+      if (seenIds.has(completeId)) {
+        hasFlaggedIssues = true;
+        warnings.push(`Duplicate question number "${completeId}" detected.`);
+        flagged = flagged || `Duplicate question identifier "${completeId}".`;
+      } else {
+        seenIds.add(completeId);
       }
 
       if (flagged) {
@@ -282,7 +300,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       }
 
       canonicalQuestions.push({
-        questionId: qId,
+        questionId: completeId,
         subquestionId: q.subquestionId ? String(q.subquestionId).trim() : undefined,
         questionText: q.questionText ? String(q.questionText).trim() : undefined,
         maxMarks: maxM,
@@ -464,6 +482,12 @@ Faithfully preserve mathematical notation, equations, diagrams, tables, chemical
 Flag missing answers, missing marks, or question number discrepancies honestly.
 Output must be strictly raw JSON with no Markdown wrapping.`;
 
+    const candidateModels = Array.from(new Set([config.primaryModel, ...config.fallbackModels]))
+      .filter((m) => m !== 'gemini-3.8-flash' && m !== 'gemini-flash-latest');
+    if (candidateModels.length === 0) candidateModels.push('gemini-2.5-flash');
+
+    const timeoutBudget = config.requestTimeoutMs < 5000 ? config.requestTimeoutMs : Math.max(config.requestTimeoutMs, 120000);
+
     const geminiResult = await callGeminiWithFallback(
       contentsParts,
       systemInstruction,
@@ -472,8 +496,10 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         jobId: id,
         institutionId: metadata.institutionId,
         pipelineStage: 'answer_key_extraction',
+        candidateModels,
         responseSchema: canonicalAnswerKeySchema,
         thinkingBudget: 0,
+        timeoutMs: timeoutBudget,
       }
     );
 
@@ -497,12 +523,13 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
 
     const canonicalQuestions: CanonicalQuestionKey[] = [];
     const warnings: string[] = Array.isArray(parsedResult.warnings) ? parsedResult.warnings : [];
+    const seenIds = new Set<string>();
     let hasFlaggedIssues = false;
     let computedSum = 0;
 
     for (let i = 0; i < rawQuestions.length; i++) {
       const q = rawQuestions[i];
-      const qId = String(q.questionId || q.qNo || `${i + 1}`).trim();
+      const completeId = getCompleteQuestionIdentifier(q) || `${i + 1}`;
       let maxM = Number(q.maxMarks);
 
       let flagged = q.flaggedIssue ? String(q.flaggedIssue).trim() : undefined;
@@ -511,9 +538,17 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         maxM = 0;
         flagged = flagged || 'Missing or invalid maximum marks in uploaded answer key.';
         hasFlaggedIssues = true;
-        warnings.push(`Question ${qId}: Missing maximum marks.`);
+        warnings.push(`Question ${completeId}: Missing maximum marks.`);
       } else {
         computedSum += maxM;
+      }
+
+      if (seenIds.has(completeId)) {
+        hasFlaggedIssues = true;
+        warnings.push(`Duplicate question number "${completeId}" detected.`);
+        flagged = flagged || `Duplicate question identifier "${completeId}".`;
+      } else {
+        seenIds.add(completeId);
       }
 
       if (flagged) {
@@ -521,7 +556,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       }
 
       canonicalQuestions.push({
-        questionId: qId,
+        questionId: completeId,
         subquestionId: q.subquestionId ? String(q.subquestionId).trim() : undefined,
         questionText: q.questionText ? String(q.questionText).trim() : undefined,
         maxMarks: maxM,
@@ -617,6 +652,22 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
 
     const updatedQuestions = updates.questions ? [...updates.questions] : existing.questions;
 
+    if (updates.questions) {
+      const seenUpdateIds = new Set<string>();
+      for (let idx = 0; idx < updatedQuestions.length; idx++) {
+        const q = updatedQuestions[idx];
+        const completeId = getCompleteQuestionIdentifier(q);
+        if (!completeId) {
+          throw new AnswerKeyValidationError(`Question at index ${idx} is missing a question identifier.`);
+        }
+        if (seenUpdateIds.has(completeId)) {
+          throw new AnswerKeyValidationError(`Duplicate question number "${completeId}" detected. Every question must have a unique identifier.`);
+        }
+        seenUpdateIds.add(completeId);
+        q.questionId = completeId;
+      }
+    }
+
     // Recalculate total if questions changed
     let sum = 0;
     for (const q of updatedQuestions) {
@@ -670,38 +721,45 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
 
     let calculatedSum = 0;
     const seenIds = new Set<string>();
+    const approvedQuestions: CanonicalQuestionKey[] = [];
     for (let idx = 0; idx < existing.questions.length; idx++) {
       const q = existing.questions[idx];
-      const qId = String(q.questionId || '').trim();
-      if (!qId) {
+      const completeId = getCompleteQuestionIdentifier(q);
+      if (!completeId) {
         throw new AnswerKeyValidationError(`Cannot approve answer key: Question at index ${idx} is missing a question identifier.`);
       }
 
-      if (seenIds.has(qId)) {
-        throw new AnswerKeyValidationError(`Cannot approve answer key: Duplicate question number "${qId}" detected. Every question must have a unique identifier.`);
+      if (seenIds.has(completeId)) {
+        throw new AnswerKeyValidationError(`Cannot approve answer key: Duplicate question number "${completeId}" detected. Every question must have a unique identifier.`);
       }
-      seenIds.add(qId);
+      seenIds.add(completeId);
 
       const maxM = Number(q.maxMarks);
       if (!Number.isFinite(maxM) || maxM <= 0) {
         throw new AnswerKeyValidationError(
-          `Cannot approve answer key: Question ${q.questionId} has invalid or missing maximum marks (${q.maxMarks}). All questions must have positive maximum marks before approval.`
+          `Cannot approve answer key: Question ${completeId} has invalid or missing maximum marks (${q.maxMarks}). All questions must have positive maximum marks before approval.`
         );
       }
 
       if (!q.referenceAnswer || !String(q.referenceAnswer).trim()) {
         throw new AnswerKeyValidationError(
-          `Cannot approve answer key: Question ${q.questionId} is missing a model/reference answer.`
+          `Cannot approve answer key: Question ${completeId} is missing a model/reference answer.`
         );
       }
 
       calculatedSum += maxM;
+
+      approvedQuestions.push({
+        ...q,
+        questionId: completeId,
+      });
     }
 
     const approvedKey: CanonicalAnswerKey = {
       ...existing,
       status: 'approved',
       totalMaxMarks: calculatedSum,
+      questions: approvedQuestions,
       warnings: undefined, // Cleared on instructor sign-off
       metadata: {
         ...existing.metadata,

@@ -13,13 +13,13 @@ if (typeof (process as any).loadEnvFile === 'function') {
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   geminiApiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
-  // Primary model and fallback chain
-  primaryModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-  fallbackModels: ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'],
+  // Primary model and fallback chain (using verified live models)
+  primaryModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  fallbackModels: ['gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'],
   // Concurrency & Rate Limiting
   maxConcurrentEvaluations: parseInt(process.env.MAX_CONCURRENT_EVALS || '4', 10),
   maxRetriesPerModel: 2,
-  requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS || '90000', 10), // 90s
+  requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS || '120000', 10), // 120s default
   // Token Pricing per 1M tokens (Gemini 2.5 / 3.x Flash tier)
   pricing: {
     inputPerMillion: 0.075,  // $0.075 per 1M input tokens

@@ -9,7 +9,12 @@
  */
 
 import { Type } from '@google/genai';
-import { CanonicalAnswerKey, StudentExtractedScript, StudentExtractedAnswer } from './types';
+import {
+  CanonicalAnswerKey,
+  StudentExtractedScript,
+  StudentExtractedAnswer,
+  getCompleteQuestionIdentifier,
+} from './types';
 import { callGeminiWithFallback, GeminiCallOptions } from './geminiClient';
 import { UserContext } from './auth';
 
@@ -182,9 +187,15 @@ NEVER fabricate missing answers or synthetic scores.`;
     // Map of extracted answers by questionId
     const extractedMap = new Map<string, any>();
     for (const a of rawAnswers) {
-      if (a && a.questionId) {
-        const cleanId = String(a.questionId).trim();
-        extractedMap.set(cleanId, a);
+      if (a) {
+        if (a.questionId) {
+          const cleanId = String(a.questionId).trim();
+          extractedMap.set(cleanId, a);
+        }
+        const completeAId = getCompleteQuestionIdentifier(a);
+        if (completeAId) {
+          extractedMap.set(completeAId, a);
+        }
       }
     }
 
@@ -194,7 +205,8 @@ NEVER fabricate missing answers or synthetic scores.`;
     // Ensure complete question coverage matching the canonical answer key
     for (const q of canonicalKey.questions) {
       const qId = q.questionId;
-      const extracted = extractedMap.get(qId);
+      const completeQId = getCompleteQuestionIdentifier(q);
+      const extracted = extractedMap.get(qId) || (completeQId ? extractedMap.get(completeQId) : undefined);
 
       if (extracted) {
         const isAttempted = Boolean(extracted.isAttempted && extracted.studentAnswerText && extracted.studentAnswerText.trim() !== '[Not Attempted]');

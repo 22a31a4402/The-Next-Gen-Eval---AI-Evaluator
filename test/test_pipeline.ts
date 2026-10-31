@@ -1647,6 +1647,325 @@ async function runTests() {
     'Approval strictly rejected if any duplicate question numbers exist.'
   );
 
+  // 16b. Hierarchical Question Numbering (1.1, 1.2, 2.1) are NOT treated as duplicates
+  const hierarchicalKey = {
+    id: 'ak_hierarchical_test_01',
+    examId: 'exam_hier_01',
+    title: 'Hierarchical Exam',
+    sourceMode: 'ai_generated' as const,
+    version: 1,
+    status: 'draft' as const,
+    totalMaxMarks: 20,
+    questions: [
+      {
+        questionId: '1.1',
+        maxMarks: 5,
+        referenceAnswer: 'Answer for Q1.1',
+        expectedConcepts: ['C1'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '1.2',
+        maxMarks: 5,
+        referenceAnswer: 'Answer for Q1.2',
+        expectedConcepts: ['C2'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '2.1',
+        maxMarks: 10,
+        referenceAnswer: 'Answer for Q2.1',
+        expectedConcepts: ['C3'],
+        acceptableAlternatives: [],
+        markingCriteria: ['10 marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(hierarchicalKey);
+  const approvedHierKey = answerKeyService.approveAnswerKey(hierarchicalKey.id, instA_User);
+  assert(approvedHierKey.status === 'approved', 'Hierarchical questions 1.1, 1.2, 2.1 successfully approved without false duplicate collision.');
+  assert(approvedHierKey.questions[0].questionId === '1.1', 'Preserves complete question identifier 1.1.');
+  assert(approvedHierKey.questions[1].questionId === '1.2', 'Preserves complete question identifier 1.2.');
+  assert(approvedHierKey.totalMaxMarks === 20, 'Correctly computes total max marks for hierarchical questions.');
+
+  // 16c. Parent question ("1") and sub-questions ("1.1", "1.2") coexist in the same key
+  const parentSubCoexistKey = {
+    id: 'ak_coexist_test_02',
+    examId: 'exam_coexist_02',
+    title: 'Parent and Subquestions Coexist',
+    sourceMode: 'ai_generated' as const,
+    version: 1,
+    status: 'draft' as const,
+    totalMaxMarks: 15,
+    questions: [
+      {
+        questionId: '1', // Parent question
+        maxMarks: 5,
+        referenceAnswer: 'Parent question overview answer',
+        expectedConcepts: ['Overview'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '1.1', // Subquestion
+        maxMarks: 5,
+        referenceAnswer: 'Subquestion 1.1 detailed answer',
+        expectedConcepts: ['Detail 1'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '1.2', // Subquestion
+        maxMarks: 5,
+        referenceAnswer: 'Subquestion 1.2 detailed answer',
+        expectedConcepts: ['Detail 2'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(parentSubCoexistKey);
+  const approvedCoexistKey = answerKeyService.approveAnswerKey(parentSubCoexistKey.id, instA_User);
+  assert(approvedCoexistKey.status === 'approved', 'Parent question 1 and subquestions 1.1, 1.2 successfully coexist in approved answer key.');
+  assert(approvedCoexistKey.questions.length === 3, 'All 3 questions preserved in coexistence test.');
+
+  // 16d. Hierarchical numbering with questionId and subquestionId fields
+  const subqFieldsKey = {
+    id: 'ak_subq_fields_03',
+    examId: 'exam_subq_03',
+    title: 'Subquestion Fields Exam',
+    sourceMode: 'ai_generated' as const,
+    version: 1,
+    status: 'draft' as const,
+    totalMaxMarks: 10,
+    questions: [
+      {
+        questionId: '1',
+        subquestionId: '1',
+        maxMarks: 5,
+        referenceAnswer: 'Answer 1.1',
+        expectedConcepts: ['Concept 1'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '1',
+        subquestionId: '2',
+        maxMarks: 5,
+        referenceAnswer: 'Answer 1.2',
+        expectedConcepts: ['Concept 2'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(subqFieldsKey);
+  const approvedSubqKey = answerKeyService.approveAnswerKey(subqFieldsKey.id, instA_User);
+  assert(approvedSubqKey.status === 'approved', 'Questions with questionId "1" and subquestionId "1"/"2" resolve to 1.1/1.2 and approve cleanly.');
+  assert(approvedSubqKey.questions[0].questionId === '1.1', 'Question 1.1 resolved and saved.');
+  assert(approvedSubqKey.questions[1].questionId === '1.2', 'Question 1.2 resolved and saved.');
+
+  // 16e. Mixed Numbering Formats (letters, roman numerals, parentheses)
+  const mixedNumberingKey = {
+    id: 'ak_mixed_numbering_04',
+    examId: 'exam_mixed_04',
+    title: 'Mixed Numbering Exam',
+    sourceMode: 'ai_generated' as const,
+    version: 1,
+    status: 'draft' as const,
+    totalMaxMarks: 20,
+    questions: [
+      {
+        questionId: '1.a',
+        maxMarks: 5,
+        referenceAnswer: 'Answer 1.a',
+        expectedConcepts: ['Concept 1.a'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '1.b',
+        maxMarks: 5,
+        referenceAnswer: 'Answer 1.b',
+        expectedConcepts: ['Concept 1.b'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '2(a)',
+        maxMarks: 5,
+        referenceAnswer: 'Answer 2(a)',
+        expectedConcepts: ['Concept 2(a)'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: 'Section A - 3.1',
+        maxMarks: 5,
+        referenceAnswer: 'Answer Section A - 3.1',
+        expectedConcepts: ['Section Concept'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(mixedNumberingKey);
+  const approvedMixedKey = answerKeyService.approveAnswerKey(mixedNumberingKey.id, instA_User);
+  assert(approvedMixedKey.status === 'approved', 'Mixed numbering formats (1.a, 1.b, 2(a), Section A - 3.1) successfully approved.');
+
+  // 16f. Genuine duplicates in hierarchical numbering are strictly rejected
+  const genuineHierDuplicateKey = {
+    id: 'ak_genuine_hier_dup_05',
+    examId: 'exam_hier_dup_05',
+    title: 'Hierarchical Duplicate Exam',
+    sourceMode: 'ai_generated' as const,
+    version: 1,
+    status: 'draft' as const,
+    totalMaxMarks: 10,
+    questions: [
+      {
+        questionId: '1.1',
+        maxMarks: 5,
+        referenceAnswer: 'First 1.1 answer',
+        expectedConcepts: ['Concept 1'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+      {
+        questionId: '1.1', // GENUINE DUPLICATE!
+        maxMarks: 5,
+        referenceAnswer: 'Second 1.1 answer',
+        expectedConcepts: ['Concept 2'],
+        acceptableAlternatives: [],
+        markingCriteria: ['5 marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(genuineHierDuplicateKey);
+  assertThrows(
+    () => answerKeyService.approveAnswerKey(genuineHierDuplicateKey.id, instA_User),
+    'duplicate question number',
+    'Genuine duplicate hierarchical question numbers (1.1 and 1.1) are strictly rejected.'
+  );
+
+  // 16g. Update/Editing validation: updateAnswerKey accepts hierarchical questions but rejects duplicates
+  const keyToEdit = {
+    id: 'ak_edit_validation_06',
+    examId: 'exam_edit_06',
+    title: 'Edit Validation Exam',
+    sourceMode: 'ai_generated' as const,
+    version: 1,
+    status: 'draft' as const,
+    totalMaxMarks: 10,
+    questions: [
+      {
+        questionId: '1',
+        maxMarks: 10,
+        referenceAnswer: 'Initial answer',
+        expectedConcepts: ['Initial'],
+        acceptableAlternatives: [],
+        markingCriteria: ['10 marks'],
+      },
+    ],
+    metadata: {
+      institutionId: instA_User.institutionId,
+      createdBy: instA_User.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+  (answerKeyService as any).saveToDisk(keyToEdit);
+
+  // Editing to hierarchical 1.1 and 1.2 succeeds
+  const updatedHier = answerKeyService.updateAnswerKey(
+    keyToEdit.id,
+    {
+      questions: [
+        {
+          questionId: '1.1',
+          maxMarks: 5,
+          referenceAnswer: 'Updated 1.1',
+          expectedConcepts: ['Concept 1.1'],
+          acceptableAlternatives: [],
+          markingCriteria: ['5 marks'],
+        },
+        {
+          questionId: '1.2',
+          maxMarks: 5,
+          referenceAnswer: 'Updated 1.2',
+          expectedConcepts: ['Concept 1.2'],
+          acceptableAlternatives: [],
+          markingCriteria: ['5 marks'],
+        },
+      ],
+    },
+    instA_User
+  );
+  assert(updatedHier.questions[0].questionId === '1.1' && updatedHier.questions[1].questionId === '1.2', 'updateAnswerKey successfully saves hierarchical question numbering.');
+
+  // Editing to duplicate questions throws AnswerKeyValidationError
+  assertThrows(
+    () =>
+      answerKeyService.updateAnswerKey(
+        keyToEdit.id,
+        {
+          questions: [
+            {
+              questionId: '2.1',
+              maxMarks: 5,
+              referenceAnswer: 'First 2.1',
+              expectedConcepts: [],
+              acceptableAlternatives: [],
+              markingCriteria: [],
+            },
+            {
+              questionId: '2.1', // Duplicate!
+              maxMarks: 5,
+              referenceAnswer: 'Second 2.1',
+              expectedConcepts: [],
+              acceptableAlternatives: [],
+              markingCriteria: [],
+            },
+          ],
+        },
+        instA_User
+      ),
+    'duplicate question number',
+    'updateAnswerKey strictly rejects duplicate question numbers.'
+  );
+
   // 17. Rejection of Mode 2 extraction when answer key document is missing
   let caughtMissingDoc = false;
   try {

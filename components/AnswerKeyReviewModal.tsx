@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CanonicalAnswerKey, CanonicalQuestionKey } from '../types';
+import { CanonicalAnswerKey, CanonicalQuestionKey, getCompleteQuestionIdentifier } from '../types';
 import { ExamDocViewer } from './ExamDocViewer';
 import { 
   CheckCircle, 
@@ -60,22 +60,22 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
 
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
-    const qId = (q.questionId || '').trim();
-    if (!qId) {
+    const completeId = getCompleteQuestionIdentifier(q);
+    if (!completeId) {
       validationErrors.push(`Question #${i + 1} has an empty identifier.`);
-    } else if (seenIds.has(qId)) {
-      validationErrors.push(`Duplicate question number: "${qId}". Each question must have a unique identifier.`);
+    } else if (seenIds.has(completeId)) {
+      validationErrors.push(`Duplicate question number: "${completeId}". Each question must have a unique identifier.`);
     } else {
-      seenIds.add(qId);
+      seenIds.add(completeId);
     }
 
     const marks = Number(q.maxMarks);
     if (!Number.isFinite(marks) || marks <= 0) {
-      validationErrors.push(`Question "${qId || i + 1}" has invalid maximum marks (${q.maxMarks}). Must be positive (> 0).`);
+      validationErrors.push(`Question "${completeId || i + 1}" has invalid maximum marks (${q.maxMarks}). Must be positive (> 0).`);
     }
 
     if (!q.referenceAnswer || q.referenceAnswer.trim().length === 0) {
-      validationErrors.push(`Question "${qId || i + 1}" is missing a reference model answer.`);
+      validationErrors.push(`Question "${completeId || i + 1}" is missing a reference model answer.`);
     }
   }
 

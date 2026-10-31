@@ -194,6 +194,7 @@ export interface GeminiCallOptions {
   candidateModels?: string[];
   responseSchema?: any;
   thinkingBudget?: number;
+  timeoutMs?: number;
 }
 
 export interface GeminiCallResult {
@@ -251,7 +252,12 @@ export const callGeminiWithFallback = async (
   }
 
   const ai = !mockGenerateFn ? getGeminiClient() : null;
-  const candidateModels = options?.candidateModels || Array.from(new Set(options?.model ? [options.model, ...config.fallbackModels] : [config.primaryModel, ...config.fallbackModels]));
+  const rawCandidates = options?.candidateModels || Array.from(new Set(options?.model ? [options.model, ...config.fallbackModels] : [config.primaryModel, ...config.fallbackModels]));
+  // Filter out unresponsive or deprecated model identifiers that hang
+  const candidateModels = rawCandidates.filter((m) => m !== 'gemini-3.8-flash' && m !== 'gemini-flash-latest');
+  if (candidateModels.length === 0) {
+    candidateModels.push('gemini-2.5-flash');
+  }
   const jobId = options?.jobId || `job_${correlationId}`;
   const institutionId = options?.institutionId || 'inst_aarshiv_01';
   const pipelineStage = options?.pipelineStage || 'grading';
@@ -262,7 +268,8 @@ export const callGeminiWithFallback = async (
   let totalRetries = 0;
   let fallbackCallsCount = 0;
   const overallStart = Date.now();
-  const overallDeadline = overallStart + config.requestTimeoutMs;
+  const overallTimeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : config.requestTimeoutMs;
+  const overallDeadline = overallStart + overallTimeoutMs;
 
   for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
     const modelName = candidateModels[modelIdx];
@@ -295,7 +302,7 @@ export const callGeminiWithFallback = async (
         });
 
         throw new Error(
-          `Overall evaluation deadline exceeded (${config.requestTimeoutMs}ms) during evaluation of model ${modelName}.`
+          `Overall evaluation deadline exceeded (${overallTimeoutMs}ms) during evaluation of model ${modelName}.`
         );
       }
 
@@ -328,7 +335,7 @@ export const callGeminiWithFallback = async (
           });
 
           throw new Error(
-            `Overall evaluation deadline (${config.requestTimeoutMs}ms) would be exceeded during retry backoff for model ${modelName}.`
+            `Overall evaluation deadline (${overallTimeoutMs}ms) would be exceeded during retry backoff for model ${modelName}.`
           );
         }
 
@@ -346,7 +353,7 @@ export const callGeminiWithFallback = async (
         let timeoutHandle: any;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
-            reject(new Error(`Gemini call deadline exceeded (${config.requestTimeoutMs}ms total budget)`));
+            reject(new Error(`Gemini call deadline exceeded (${overallTimeoutMs}ms total budget)`));
           }, remainingForCall);
         });
 

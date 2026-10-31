@@ -8,7 +8,7 @@
  * 1. Live API key is loaded from .env
  * 2. Real Gemini model invocation without mocking or simulation
  * 3. Correct schema enforcement (canonicalAnswerKeySchema)
- * 4. Latency stays well within the 90s deadline (<30s)
+ * 4. Latency stays well within deadline (<30s)
  * 5. Full question details, marking criteria, and diagram references are preserved
  */
 
@@ -48,18 +48,41 @@ async function runLiveAnswerKeyTest() {
   console.log(`Loaded Question Paper PDF: "${realQpName}"`);
   console.log(`File Size: ${(pdfBuffer.length / 1024).toFixed(1)} KB (${pdfBuffer.length} bytes)`);
 
-  const questionPaperDoc = {
-    name: realQpName,
-    text: 'ENT Revision Test 3: Diseases of Nose and Paranasal Sinuses. Q1. Describe etiology, clinical features, and management of Rhinosporidiosis (10 marks). Q2. Enumerate paranasal sinuses and describe Caldwell-Luc procedure with surgical illustration (10 marks).',
-    base64: pdfBuffer.toString('base64'),
-    mimeType: 'application/pdf',
-  };
+  // SCENARIO 1: Pure Visual Document (Real PDF base64 exactly as uploaded by UI without pre-extracted text)
+  console.log('\n--- Scenario 1: Live Generation from Pure Visual Multimodal PDF (Base64) ---');
+  const tStart1 = Date.now();
 
-  const tStart = Date.now();
-  console.log('\n--- Initiating Live AI Answer-Key Generation Pipeline ---');
+  const answerKeyVisual = await answerKeyService.generateFromQuestionPaper({
+    questionPaper: {
+      name: realQpName,
+      base64: pdfBuffer.toString('base64'),
+      mimeType: 'application/pdf',
+    },
+    title: 'ENT Revision Test 3: Diseases of Nose & Paranasal Sinuses',
+    subject: 'Otorhinolaryngology',
+    metadata: {
+      institutionId: 'inst_ent_hospital',
+      createdBy: 'dr_chief_examiner',
+    },
+  });
 
-  const answerKey = await answerKeyService.generateFromQuestionPaper({
-    questionPaper: questionPaperDoc,
+  const latency1 = Date.now() - tStart1;
+  console.log(`• Scenario 1 Finished in: ${latency1}ms (${(latency1 / 1000).toFixed(2)}s)`);
+  console.log(`• Questions Extracted:   ${answerKeyVisual.questions.length}`);
+  console.log(`• Total Max Marks:       ${answerKeyVisual.totalMaxMarks}`);
+  console.log(`• Deadline Compliance:   ${latency1 < config.requestTimeoutMs ? 'PASS (Under deadline)' : 'FAIL'}`);
+
+  // SCENARIO 2: Hybrid Visual + Text
+  console.log('\n--- Scenario 2: Live Generation with Hybrid Text + Visual Document ---');
+  const tStart2 = Date.now();
+
+  const answerKeyHybrid = await answerKeyService.generateFromQuestionPaper({
+    questionPaper: {
+      name: realQpName,
+      text: 'ENT Revision Test 3: Diseases of Nose and Paranasal Sinuses. Q1. Describe etiology, clinical features, and management of Rhinosporidiosis (10 marks). Q2. Enumerate paranasal sinuses and describe Caldwell-Luc procedure with surgical illustration (10 marks).',
+      base64: pdfBuffer.toString('base64'),
+      mimeType: 'application/pdf',
+    },
     title: 'ENT Revision Test 3: Diseases of Nose & Paranasal Sinuses',
     subject: 'Otorhinolaryngology',
     totalMaxMarks: 20,
@@ -69,43 +92,29 @@ async function runLiveAnswerKeyTest() {
     },
   });
 
-  const totalElapsedMs = Date.now() - tStart;
+  const latency2 = Date.now() - tStart2;
+  console.log(`• Scenario 2 Finished in: ${latency2}ms (${(latency2 / 1000).toFixed(2)}s)`);
+  console.log(`• Questions Extracted:   ${answerKeyHybrid.questions.length}`);
+  console.log(`• Total Max Marks:       ${answerKeyHybrid.totalMaxMarks}`);
+  console.log(`• Deadline Compliance:   ${latency2 < config.requestTimeoutMs ? 'PASS (Under deadline)' : 'FAIL'}`);
 
-  // Retrieve usage summary from ledger
-  const summary = usageLedger.getJobUsageSummary(`job_${answerKey.id}`);
-
-  console.log('\n========================================================================');
-  console.log(' LIVE EXECUTION REPORT & RESULTS');
-  console.log('========================================================================');
-  console.log(`• Generated Answer Key ID: ${answerKey.id}`);
-  console.log(`• Exam Title:             ${answerKey.title}`);
-  console.log(`• Total Max Marks:        ${answerKey.totalMaxMarks}`);
-  console.log(`• Status:                 ${answerKey.status}`);
-  console.log(`• Questions Extracted:    ${answerKey.questions.length}`);
-  console.log(`• Total Pipeline Latency: ${totalElapsedMs} ms (${(totalElapsedMs / 1000).toFixed(2)}s)`);
-  console.log(`• Deadline Compliance:    ${totalElapsedMs < config.requestTimeoutMs ? 'PASS (Under 90s deadline)' : 'FAIL'}`);
-
-  console.log('\n--- Extracted Question Details ---');
-  answerKey.questions.forEach((q, idx) => {
-    console.log(`\n[Question ${idx + 1}] ID: ${q.questionId} | Marks: ${q.maxMarks} | Confidence: ${q.confidence}`);
-    console.log(`Question Text: "${q.questionText?.slice(0, 100)}..."`);
-    console.log(`Reference Answer Preview: "${q.referenceAnswer.slice(0, 150)}..."`);
-    console.log(`Expected Concepts: ${q.expectedConcepts.length} items (${q.expectedConcepts.slice(0, 3).join(', ')}...)`);
-    console.log(`Marking Criteria:  ${q.markingCriteria.length} items (${q.markingCriteria.slice(0, 2).join('; ')}...)`);
+  console.log('\n--- Sample Extracted Questions from Real PDF ---');
+  answerKeyVisual.questions.slice(0, 4).forEach((q, idx) => {
+    console.log(`[Q${idx + 1}] ID: "${q.questionId}" | Marks: ${q.maxMarks} | Text: "${q.questionText?.slice(0, 80)}..."`);
+    console.log(`   Model Answer: "${q.referenceAnswer.slice(0, 100)}..."`);
+    console.log(`   Expected Concepts: ${q.expectedConcepts.length} points | Criteria: ${q.markingCriteria.length} items`);
     if (q.diagramReferences && q.diagramReferences.length > 0) {
-      console.log(`Diagram References: ${q.diagramReferences.join(', ')}`);
-    }
-    if (q.flaggedIssue) {
-      console.log(`⚠️ Flagged Issue: ${q.flaggedIssue}`);
+      console.log(`   Diagram References: ${q.diagramReferences.join(', ')}`);
     }
   });
 
+  const summary = usageLedger.getJobUsageSummary(`job_${answerKeyVisual.id}`);
   if (summary) {
     console.log('\n--- Ledger Usage Accounting ---');
     console.log(`• Total Input Tokens:     ${summary.totalInputTokens}`);
     console.log(`• Total Output Tokens:    ${summary.totalOutputTokens}`);
     console.log(`• Total Estimated Cost:   $${summary.totalEstimatedCostUsd?.toFixed(6)} USD (₹${summary.totalEstimatedCostInr?.toFixed(2)} INR)`);
-    console.log(`• Actual Models Used:     ${summary.modelsUsed.join(', ')}`);
+    console.log(`• Models Used:            ${summary.modelsUsed.join(', ')}`);
   }
 
   console.log('\n========================================================================');
