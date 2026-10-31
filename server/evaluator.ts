@@ -261,16 +261,45 @@ export class EvaluationEngine {
     try {
       validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName);
     } catch (valErr: any) {
-      job.status = 'needs_review';
-      job.draftReport = geminiResult.report; // Preserve unvalidated draft for authorized instructor/admin review
-      job.error = `Academic Validation Discrepancy: ${valErr?.message || valErr}`;
-      job.currentStepMessage = `Needs Review: ${job.error}`;
-      try {
-        evaluationMetadataService.generateMetadata(job);
-      } catch (metaErr) {
-        console.warn('[EvaluationEngine] Metadata error on discrepancy:', metaErr);
+      // If the discrepancy is purely an aggregate totalScore or maxScore arithmetic addition error from an LLM fallback,
+      // but all individual question marks, bounds, and criteria are valid, reconcile with deterministic backend calculation!
+      const isAggregateDiscrepancy =
+        String(valErr?.message || '').includes('Aggregate score discrepancy') ||
+        String(valErr?.message || '').includes('Aggregate maximum score discrepancy');
+
+      if (
+        isAggregateDiscrepancy &&
+        geminiResult.report &&
+        Array.isArray(geminiResult.report.questions) &&
+        geminiResult.report.questions.length > 0
+      ) {
+        console.warn(
+          `[EvaluationEngine][${correlationId}] Reconciling model aggregate totalScore with exact deterministic mathematical sum.`
+        );
+        const fixedReport = { ...geminiResult.report };
+        const exactTotal = fixedReport.questions.reduce(
+          (sum: number, q: any) => sum + (typeof q?.marks === 'number' && Number.isFinite(q.marks) ? q.marks : 0),
+          0
+        );
+        const exactMax = fixedReport.questions.reduce(
+          (sum: number, q: any) => sum + (typeof q?.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0),
+          0
+        );
+        fixedReport.totalScore = parseFloat(exactTotal.toFixed(2));
+        fixedReport.maxScore = parseFloat(exactMax.toFixed(2));
+        validatedReport = this.validateAndNormalizeReport(fixedReport, mode, job.studentName);
+      } else {
+        job.status = 'needs_review';
+        job.draftReport = geminiResult.report; // Preserve unvalidated draft for authorized instructor/admin review
+        job.error = `Academic Validation Discrepancy: ${valErr?.message || valErr}`;
+        job.currentStepMessage = `Needs Review: ${job.error}`;
+        try {
+          evaluationMetadataService.generateMetadata(job);
+        } catch (metaErr) {
+          console.warn('[EvaluationEngine] Metadata error on discrepancy:', metaErr);
+        }
+        throw valErr;
       }
-      throw valErr;
     }
     job.metrics.validationLatencyMs = Date.now() - valStart;
 

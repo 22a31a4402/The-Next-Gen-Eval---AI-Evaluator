@@ -49,8 +49,6 @@ export const evaluationReportSchema = {
     testTitle: { type: Type.STRING },
     testTopics: { type: Type.STRING },
     testDate: { type: Type.STRING },
-    totalScore: { type: Type.NUMBER },
-    maxScore: { type: Type.NUMBER },
     questions: {
       type: Type.ARRAY,
       items: {
@@ -71,6 +69,8 @@ export const evaluationReportSchema = {
         required: ['qNo', 'feedbackPoints', 'marks', 'maxMarks', 'isCorrect'],
       },
     },
+    totalScore: { type: Type.NUMBER },
+    maxScore: { type: Type.NUMBER },
     generalFeedback: {
       type: Type.OBJECT,
       properties: {
