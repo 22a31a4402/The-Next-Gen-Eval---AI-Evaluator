@@ -276,6 +276,7 @@ async function runMetadataTests() {
     const job2: EvaluationJob = {
       ...job1,
       id: jobId2,
+      extractedScript: undefined,
       correlationId: `meta_corr_2_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_2_${Date.now()}`, startTime: Date.now() },
       inputPayload: {
@@ -344,6 +345,7 @@ async function runMetadataTests() {
     const job3: EvaluationJob = {
       ...job1,
       id: jobId3,
+      extractedScript: undefined,
       correlationId: `meta_corr_3_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_3_${Date.now()}`, startTime: Date.now() },
       inputPayload: {

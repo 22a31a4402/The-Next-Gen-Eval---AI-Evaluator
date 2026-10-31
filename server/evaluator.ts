@@ -180,7 +180,8 @@ export class EvaluationEngine {
         extractedScript,
         activeCanonicalKey,
         mode,
-        job.studentName
+        job.studentName,
+        payload.facultyNotes
       );
 
       geminiResult = await callGeminiWithFallback(
@@ -463,26 +464,25 @@ export class EvaluationEngine {
       });
     }
 
-    // 7. Aggregate Totals Verification
+    // 7. Aggregate Totals: Calculated deterministically in code from question marks
     const roundedTotalScore = parseFloat(calculatedTotalScore.toFixed(2));
     const roundedMaxScore = parseFloat(calculatedMaxScore.toFixed(2));
 
-    // Verify model-reported totalScore against exact calculated sum
+    // Log reconciliation if model aggregate differs slightly from deterministic sum
     if (typeof report.totalScore === 'number' && Number.isFinite(report.totalScore)) {
       const diff = Math.abs(report.totalScore - roundedTotalScore);
       if (diff > 0.05) {
-        throw new ValidationError(
-          `Aggregate score discrepancy: Model reported totalScore=${report.totalScore}, but the exact sum of question marks is ${roundedTotalScore}.`
+        console.log(
+          `[EvaluationEngine] Deterministic score calculation: Reconciled model reported totalScore (${report.totalScore}) to exact sum of question marks (${roundedTotalScore}).`
         );
       }
     }
 
-    // Verify model-reported maxScore against exact calculated max sum
     if (typeof report.maxScore === 'number' && Number.isFinite(report.maxScore)) {
       const diff = Math.abs(report.maxScore - roundedMaxScore);
       if (diff > 0.05) {
-        throw new ValidationError(
-          `Aggregate maximum score discrepancy: Model reported maxScore=${report.maxScore}, but the exact sum of question maxMarks is ${roundedMaxScore}.`
+        console.log(
+          `[EvaluationEngine] Deterministic maxScore calculation: Reconciled model reported maxScore (${report.maxScore}) to exact sum of question maxMarks (${roundedMaxScore}).`
         );
       }
     }
@@ -523,18 +523,20 @@ export class EvaluationEngine {
 
   /**
    * Stage 2: Assembles canonical exam JSON and student extracted answer JSON
-   * Avoids retransmitting original exam PDFs during grading.
-   * Retains visual evidence (student diagrams/formulas) when necessary.
+   * Restores the proven original academic grading methodology, marking criteria,
+   * partial marks, deductions, and feedback generation.
+   * Avoids retransmitting original exam PDFs during grading to eliminate 120s timeouts.
    */
   public prepareStage2GradingContext(
     extractedScript: StudentExtractedScript,
     canonicalKey: CanonicalAnswerKey,
     mode: EvaluationMode,
-    studentName: string
+    studentName: string,
+    facultyNotes?: { name: string; text?: string; base64?: string; mimeType?: string } | null
   ): { contentsParts: any[]; systemInstruction: string } {
     const contentsParts: any[] = [];
 
-    // 1. Approved Canonical Exam Reference (Structured JSON - ZERO exam PDFs retransmitted!)
+    // 1. Approved Canonical Exam Reference (Structured JSON marking scheme)
     const examScheme = {
       examTitle: canonicalKey.title,
       subject: canonicalKey.subject,
@@ -558,7 +560,7 @@ export class EvaluationEngine {
       text: `--- APPROVED CANONICAL EXAM REFERENCE (MARKING SCHEME) ---\n${JSON.stringify(examScheme, null, 2)}\n`,
     });
 
-    // 2. Student Extracted Answer JSON
+    // 2. Student Extracted Answer JSON (Stage 1 Output)
     const studentSubmission = {
       studentName: extractedScript.studentName || studentName,
       extractedAnswers: extractedScript.answers.map((a) => ({
@@ -579,45 +581,68 @@ export class EvaluationEngine {
       text: `--- EXTRACTED STUDENT RESPONSES (STAGE 1 OUTPUT) ---\n${JSON.stringify(studentSubmission, null, 2)}\n`,
     });
 
-    // 3. Retain visual evidence ONLY when necessary (e.g. diagrams or formulas were drawn)
-    if (extractedScript.visualEvidenceRetained) {
-      const visualAnswer = extractedScript.answers.find((a) => a.visualEvidenceBase64);
-      if (visualAnswer?.visualEvidenceBase64 && visualAnswer?.visualEvidenceMimeType) {
-        contentsParts.push({
-          text: `DOCUMENT_START: STUDENT ACTUAL VISUAL SCRIPT (Retained for Diagram & Visual Verification)`,
-        });
-        contentsParts.push({
-          inlineData: {
-            data: visualAnswer.visualEvidenceBase64,
-            mimeType: visualAnswer.visualEvidenceMimeType,
-          },
-        });
-        contentsParts.push({ text: `DOCUMENT_END: STUDENT ACTUAL VISUAL SCRIPT` });
-      }
+    // 3. Faculty Manual Feedback (Only if mode is 'with-manual' and provided)
+    if (mode === 'with-manual' && facultyNotes?.text) {
+      contentsParts.push({
+        text: `--- FACULTY MANUAL FEEDBACK ---\n${facultyNotes.text}\n`,
+      });
     }
 
     // 4. Stage 2 Execution Prompt
     contentsParts.push({
-      text: `Perform Stage 2 Academic Grading:
-Evaluate each question question-by-question:
-1. Compare studentAnswerText against referenceAnswer, expectedConcepts, and acceptableAlternatives.
-2. Award marks based on markingCriteria with partial credit.
-3. If isAttempted is false, award 0 marks and note "Question not attempted" in feedbackPoints.
-4. If a diagram, flowchart, circuit, chemical structure, mathematical derivation, code snippet, or illustration was provided (see diagramDescription or visual script), evaluate its subject-specific accuracy, correctness, labeling, steps, and structure, and award marks accordingly.
-5. Award full marks for valid alternative solutions, equivalent mathematical derivations, functionally correct code, or equivalent terminology across all academic disciplines.
-6. Deductions: Explain any deductions clearly with constructive feedback points.
-7. CRITICAL ACADEMIC BOUNDS:
-   - Awarded marks must NEVER exceed the question's maxMarks.
-   - Awarded marks must be non-negative (>= 0).
-   - Total score MUST equal the exact mathematical sum of awarded question marks.
-8. Return ONLY a valid JSON object matching the EvaluationReport schema.`,
+      text: `Perform Stage 2 Academic Grading now. Active Mode: ${mode}.
+Evaluate every question question-by-question against the approved marking scheme:
+1. Extract exact question numbers and their exact maximum marks (maxMarks) from the Exam Reference.
+2. Evaluate student answers against reference answers, expected concepts, and acceptable alternatives.
+3. Award full marks for equivalent conceptual understanding, alternative valid methods, functionally correct code, and sound reasoning across all academic disciplines.
+4. Award partial marks proportionally based on the markingCriteria.
+5. If isAttempted is false, award 0 marks and note "Question not attempted" in feedbackPoints.
+6. If a diagram, flowchart, circuit, chemical structure, mathematical derivation, code snippet, or illustration was provided (see diagramDescription, formulas, or studentAnswerText), evaluate its correctness, labeling, steps, and structure against diagramReferences.
+7. Deductions: Explain any deductions clearly with constructive feedback points in feedbackPoints.
+8. With-manual mode handling (if mode is 'with-manual'):
+   - Compare faculty feedback against student work and official answer key. If inconsistent, adjust marks, set isFlagged = true, and explain in flaggedComment.
+9. Without-manual mode handling (if mode is 'without-manual'):
+   - isFlagged MUST ALWAYS be false.
+   - flaggedComment MUST ALWAYS be omitted or empty.
+10. Academic score constraints:
+    - Marks for each question must be between 0 and maxMarks.
+    - Total score must equal the exact mathematical sum of awarded question marks.
+11. Return ONLY a valid JSON object matching the EvaluationReport schema.`,
     });
 
-    const systemInstruction = `You are a strict, fair, and thorough academic valuation expert for Aarshiv AI NextGen Eval.
-Evaluate extracted student responses across any academic discipline against the approved canonical exam scheme.
-Award credit for conceptual understanding, equivalent formulations, and valid working.
-Award partial credit strictly based on rubric criteria.
-Total score must equal the sum of awarded question marks.`;
+    const systemInstruction = `You are NextGen Eval, a rigorous, fair, and reliable AI academic answer-sheet evaluator. You evaluate subjective and objective answers across academic subjects by comparing student responses against the approved canonical exam reference, marking scheme, rubrics, and any permitted human evaluation feedback.
+
+EVALUATION PHILOSOPHY & PRINCIPLES:
+1. SUBJECT-AGNOSTIC SOURCE OF TRUTH:
+   - You evaluate responses across all academic subjects (e.g., Mathematics, Physical Sciences, Chemical Sciences, Biological & Medical Sciences, Engineering, Computer Science, Commerce & Economics, Languages & Literature, Humanities & Social Sciences).
+   - Never assume any specific syllabus or discipline; the provided canonical exam reference is the authoritative source of truth.
+2. ANSWER-KEY ALIGNMENT WITHOUT RIGID WORD-MATCHING:
+   - Do NOT require students to reproduce the answer key word-for-word.
+   - Award full credit when a student uses different phrasing, equivalent terminology, provides a mathematically equivalent solution, applies a valid alternative method, writes functionally correct code, or reaches the correct conclusion through sound reasoning.
+3. NO KEYWORD-ONLY CREDIT:
+   - Do not award marks merely for mentioning isolated buzzwords. Evaluate true comprehension, working, and derivations.
+4. GENERALIZED DIAGRAM, CALCULATION, CODE & STRUCTURAL HANDLING:
+   - Inspect drawings, diagrams, circuits, flowcharts, chemical structures, equations, tables, and code for correctness as represented in student responses and diagram descriptions.
+   - For numerical and mathematical questions, verify intermediate steps and final answers.
+   - For computer science and engineering questions, verify logic, syntax, data structures, and edge cases.
+   - For humanities and language questions, evaluate argument structure, textual evidence, analysis, and grammar.
+5. OBJECTIVE MARKING WITHOUT ARTIFICIAL CAPS:
+   - Marks must strictly reflect actual performance up to maxMarks. Students MAY receive full marks if completely correct.
+   - Award partial marks proportionally for partially correct answers based on marking criteria.
+6. WITH-MANUAL MODE HANDLING (Only if mode is 'with-manual'):
+   - Compare human evaluation against the student's actual answer and the official answer key.
+   - If human feedback is clearly inconsistent with the answer key or student response (e.g. overlooking valid solutions or awarding marks for incorrect work), adjust the marks, set isFlagged = true, and explain the discrepancy in 'flaggedComment'.
+7. WITHOUT-MANUAL MODE HANDLING (Only if mode is 'without-manual'):
+   - 'isFlagged' MUST ALWAYS be false.
+   - 'flaggedComment' MUST ALWAYS be omitted.
+
+CRITICAL CONSTRAINTS:
+- ACCURATE MARKING SCHEME & MAX MARKS: Extract EXACT question numbers and exact maximum marks (maxMarks). Never invent marks.
+- STUDENT MARKS COMPLIANCE: 'marks' for any question must be between 0 and 'maxMarks'.
+- NO HALLUCINATION: Do NOT invent questions not in the paper.
+- UNATTEMPTED QUESTIONS: Award 0 marks and note "Question not attempted".
+- CONSTRUCTIVE FEEDBACK: Every question must have constructive feedback points substantiating any mark deductions.
+- MODE: ${mode}.`;
 
     return { contentsParts, systemInstruction };
   }

@@ -11,6 +11,8 @@
  * - Zero logging of sensitive documents, prompts, or API credentials
  */
 
+import fs from 'fs';
+import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
 import { config } from './config';
 import { EvaluationReport } from './types';
@@ -207,25 +209,105 @@ interface ModelCooldownInfo {
 
 const modelCooldowns = new Map<string, ModelCooldownInfo>();
 
+const getCooldownFilePath = () => path.join(config.dataDir, 'model_cooldowns.json');
+
+const loadCooldownsFromDisk = () => {
+  try {
+    const file = getCooldownFilePath();
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const now = Date.now();
+      for (const [m, info] of Object.entries(data as Record<string, ModelCooldownInfo>)) {
+        if (info && typeof info.until === 'number' && info.until > now) {
+          modelCooldowns.set(m, info);
+        }
+      }
+    }
+  } catch {}
+};
+
+const saveCooldownsToDisk = () => {
+  try {
+    const file = getCooldownFilePath();
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const obj: Record<string, ModelCooldownInfo> = {};
+    const now = Date.now();
+    for (const [m, info] of modelCooldowns.entries()) {
+      if (info && info.until > now) {
+        obj[m] = info;
+      }
+    }
+    fs.writeFileSync(file, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch {}
+};
+
+// Initial load on startup
+loadCooldownsFromDisk();
+
+export const extractRetryDelayMs = (error: any): number | null => {
+  try {
+    const details = error?.details || error?.error?.details;
+    if (Array.isArray(details)) {
+      const retryInfo = details.find((d: any) => d?.retryDelay || d?.['@type']?.includes('RetryInfo'));
+      if (retryInfo?.retryDelay) {
+        const seconds = parseInt(String(retryInfo.retryDelay).replace('s', ''), 10);
+        if (!isNaN(seconds) && seconds > 0) return seconds * 1000;
+      }
+    }
+    const msg = String(error?.message || error || '');
+    const match = msg.match(/retry in\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?/i);
+    if (match) {
+      const hours = parseInt(match[1] || '0', 10);
+      const minutes = parseInt(match[2] || '0', 10);
+      const seconds = parseFloat(match[3] || '0');
+      const totalMs = (hours * 3600 + minutes * 60 + seconds) * 1000;
+      if (totalMs > 0) return totalMs;
+    }
+  } catch {}
+  return null;
+};
+
 export const markModelQuotaExhausted = (modelName: string, reason = 'Daily quota exhausted', durationMs = 3600000) => {
+  const until = Date.now() + durationMs;
+  const cleanReason = typeof reason === 'string' && reason.length > 120 ? reason.slice(0, 120) + '...' : reason;
   modelCooldowns.set(modelName, {
-    until: Date.now() + durationMs,
+    until,
     reason: 'quota_exhausted',
-    message: reason,
+    message: cleanReason,
   });
-  console.warn(
-    `[GeminiClient] Model "${modelName}" marked as QUOTA_EXHAUSTED until ${new Date(Date.now() + durationMs).toISOString()}. Reason: ${reason}`
+
+  // If gemini-3.8-flash hit daily free tier quota, mark gemini-flash-latest as well (shares same quota bucket)
+  if (modelName === 'gemini-3.8-flash' && !modelCooldowns.has('gemini-flash-latest')) {
+    modelCooldowns.set('gemini-flash-latest', {
+      until,
+      reason: 'quota_exhausted',
+      message: 'Linked free-tier quota pool exhausted',
+    });
+  } else if (modelName === 'gemini-flash-latest' && !modelCooldowns.has('gemini-3.8-flash')) {
+    modelCooldowns.set('gemini-3.8-flash', {
+      until,
+      reason: 'quota_exhausted',
+      message: 'Linked free-tier quota pool exhausted',
+    });
+  }
+
+  saveCooldownsToDisk();
+  console.log(
+    `[GeminiClient] Model "${modelName}" marked on quota cooldown until ${new Date(until).toISOString()}. Switching to next fallback model.`
   );
 };
 
 export const markModelUnavailable = (modelName: string, reason = 'Server overloaded (503)', durationMs = 60000) => {
+  const until = Date.now() + durationMs;
   modelCooldowns.set(modelName, {
-    until: Date.now() + durationMs,
+    until,
     reason: 'server_unavailable_503',
     message: reason,
   });
-  console.warn(
-    `[GeminiClient] Model "${modelName}" marked as TEMPORARILY_UNAVAILABLE (503) for ${durationMs}ms. Reason: ${reason}`
+  saveCooldownsToDisk();
+  console.log(
+    `[GeminiClient] Model "${modelName}" marked temporarily unavailable (503) for ${durationMs}ms.`
   );
 };
 
@@ -234,6 +316,7 @@ export const isModelInCooldown = (modelName: string): boolean => {
   if (!cd) return false;
   if (Date.now() >= cd.until) {
     modelCooldowns.delete(modelName);
+    saveCooldownsToDisk();
     return false;
   }
   return true;
@@ -241,6 +324,10 @@ export const isModelInCooldown = (modelName: string): boolean => {
 
 export const resetModelCooldowns = () => {
   modelCooldowns.clear();
+  try {
+    const file = getCooldownFilePath();
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch {}
 };
 
 export const getModelCooldownStatus = (): Record<string, { until: number; reason: string; remainingMs: number }> => {
@@ -563,9 +650,10 @@ export const callGeminiWithFallback = async (
             } else if (
               pipelineStage === 'answer_key_generation' ||
               pipelineStage === 'answer_key_extraction' ||
-              pipelineStage === 'student_extraction'
+              pipelineStage === 'student_extraction' ||
+              pipelineStage === 'grading'
             ) {
-              // For structured extractions & answer keys, set thinkingBudget to 0 to eliminate 4000+ chain-of-thought tokens and cut latency in half
+              // For structured extractions, answer keys, and grading, set thinkingBudget to 0 to eliminate 4000+ chain-of-thought tokens and avoid 120s timeouts
               generateConfig.thinkingConfig = {
                 thinkingBudget: 0,
               };
@@ -716,24 +804,30 @@ export const callGeminiWithFallback = async (
           customUsdToInrRate,
         });
 
-        console.warn(
-          `[GeminiClient][${correlationId}] Model ${modelName} attempt ${attempt + 1} failed. Retryable: ${retryable}`,
-          err?.message || err
-        );
-
         const isQuota429 = isDailyQuotaExhaustion(err);
         const is503Condition = is503Error(err);
 
+        const cleanErrMsg = isQuota429
+          ? 'Free tier daily request quota exhausted'
+          : is503Condition
+          ? 'Service temporarily overloaded (503)'
+          : String(err?.message || err).replace(/[\r\n]+/g, ' ').slice(0, 150);
+
+        console.log(
+          `[GeminiClient][${correlationId}] Model ${modelName} attempt ${attempt + 1} (${cleanErrMsg}). Retryable: ${retryable}`
+        );
+
         if (isQuota429) {
           // Immediately mark model in quota exhaustion cooldown so subsequent calls skip it immediately
-          markModelQuotaExhausted(modelName, String(err?.message || err), 3600000);
+          const retryDelayMs = extractRetryDelayMs(err) || 3600000;
+          markModelQuotaExhausted(modelName, cleanErrMsg, retryDelayMs);
           break; // Never retry daily quota exhaustion
         }
 
         if (is503Condition) {
           // For 503, allow at most 1 retry with short backoff, then mark temporarily unavailable and advance to next model
           if (attempt >= 1) {
-            markModelUnavailable(modelName, String(err?.message || err), 60000);
+            markModelUnavailable(modelName, cleanErrMsg, 60000);
             break;
           }
         }

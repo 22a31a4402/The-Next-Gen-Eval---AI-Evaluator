@@ -20,7 +20,7 @@ export const healthRouter = Router();
  * GET /health
  * Public liveness probe (never leaks sensitive internal information)
  */
-healthRouter.get('/health', (_req: Request, res: Response): void => {
+healthRouter.get(['/health', '/api/health'], (_req: Request, res: Response): void => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
