@@ -658,7 +658,7 @@ async function runTests() {
     nonRetryCaught = true;
   }
   assert(nonRetryCaught, 'Non-retryable 400 Bad Request fails immediately without endless retries.');
-  assert(callCount400 <= 3, 'Non-retryable error makes only 1 attempt per candidate model, no backoff loops.');
+  assert(callCount400 <= config.fallbackModels.length + 1, 'Non-retryable error makes only 1 attempt per candidate model, no backoff loops.');
 
   // 4. Model Fallback: Primary fails with non-retryable 404, secondary succeeds
   setMockGeminiProvider(async ({ model }) => {

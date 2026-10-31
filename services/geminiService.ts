@@ -193,6 +193,12 @@ export const generateStructuredFeedback = async (
     let isSettled = false;
     let sseSource: EventSource | null = null;
     let pollInterval: any = null;
+    let watchdogInterval: any = null;
+
+    let lastActiveTimestamp = Date.now();
+    const pollingStart = Date.now();
+    const MAX_ACTIVE_PROCESSING_LIMIT_MS = 300000; // 5 minutes max total execution time
+    const MAX_IDLE_TIMEOUT_MS = 90000; // 90 seconds without successful server response
 
     const cleanup = () => {
       if (sseSource) {
@@ -202,6 +208,10 @@ export const generateStructuredFeedback = async (
       if (pollInterval) {
         clearInterval(pollInterval);
         pollInterval = null;
+      }
+      if (watchdogInterval) {
+        clearInterval(watchdogInterval);
+        watchdogInterval = null;
       }
     };
 
@@ -239,6 +249,9 @@ export const generateStructuredFeedback = async (
           return;
         }
 
+        // Successfully received status from backend: refresh active timestamp
+        lastActiveTimestamp = Date.now();
+
         const data = await safeParseResponseJson<any>(res, 'Evaluation Status');
         onProgress?.(data.progressPercent || 20, data.currentStepMessage || 'Evaluating...');
 
@@ -274,12 +287,16 @@ export const generateStructuredFeedback = async (
     // Initial check
     pollStatus();
 
-    // Safety timeout: 120 seconds
-    setTimeout(() => {
-      if (!isSettled) {
-        settleFailure(new Error('Evaluation timed out waiting for backend processing.'));
+    // Safety watchdog: do not prematurely abort while backend is actively processing!
+    watchdogInterval = setInterval(() => {
+      if (isSettled) return;
+      const now = Date.now();
+      if (now - lastActiveTimestamp > MAX_IDLE_TIMEOUT_MS) {
+        settleFailure(new Error(`Evaluation timed out: Backend server did not respond for ${Math.round(MAX_IDLE_TIMEOUT_MS / 1000)} seconds.`));
+      } else if (now - pollingStart > MAX_ACTIVE_PROCESSING_LIMIT_MS) {
+        settleFailure(new Error(`Evaluation timed out: Total processing time exceeded ${Math.round(MAX_ACTIVE_PROCESSING_LIMIT_MS / 1000)} seconds.`));
       }
-    }, 120000);
+    }, 2000);
   });
 };
 

@@ -137,25 +137,37 @@ export class EvaluationEngine {
       // =========================================================================
       // TWO-STAGE LLM EVALUATION ARCHITECTURE
       // =========================================================================
-      // Stage 1 — Extraction: Extract student handwritten/printed script into canonical JSON
-      job.status = 'preprocessing';
-      job.progressPercent = 30;
-      job.currentStepMessage = 'Stage 1: Extracting student responses, formulas, and diagrams into canonical JSON...';
-      onProgress?.(30, job.currentStepMessage);
+      // Stage 1 — Extraction: Extract student handwritten/printed script into canonical JSON (or reuse if already completed)
+      let extractedScript = job.extractedScript;
+      let extractionDuration = 0;
 
-      const extStart = Date.now();
-      const extractedScript = await studentExtractor.extractStudentAnswers(
-        payload.sourceDoc,
-        activeCanonicalKey,
-        correlationId,
-        {
-          jobId: job.id,
-          institutionId: job.institutionId,
-          fallbackStudentName: job.studentName,
-        }
-      );
-      job.extractedScript = extractedScript;
-      const extractionDuration = Date.now() - extStart;
+      if (!extractedScript || !Array.isArray(extractedScript.answers) || extractedScript.answers.length === 0) {
+        job.status = 'preprocessing';
+        job.progressPercent = 30;
+        job.currentStepMessage = 'Stage 1: Extracting student responses, formulas, and diagrams into canonical JSON...';
+        onProgress?.(30, job.currentStepMessage);
+
+        const extStart = Date.now();
+        extractedScript = await studentExtractor.extractStudentAnswers(
+          payload.sourceDoc,
+          activeCanonicalKey,
+          correlationId,
+          {
+            jobId: job.id,
+            institutionId: job.institutionId,
+            fallbackStudentName: job.studentName,
+          }
+        );
+        job.extractedScript = extractedScript;
+        extractionDuration = Date.now() - extStart;
+      } else {
+        console.log(
+          `[EvaluationEngine][${correlationId}] Preserving previously completed Stage 1 extraction (${extractedScript.answers.length} answers). Skipping Stage 1 re-extraction.`
+        );
+        job.progressPercent = 45;
+        job.currentStepMessage = 'Preserving verified Stage 1 extraction. Resuming Stage 2 grading...';
+        onProgress?.(45, job.currentStepMessage);
+      }
 
       // Stage 2 — Evaluation: Grade question-wise using approved canonical exam JSON + student answer JSON
       job.status = 'grading';

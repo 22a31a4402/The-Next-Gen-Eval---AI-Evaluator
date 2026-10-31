@@ -198,6 +198,117 @@ export const studentExtractionSchema = {
   required: ['answers'],
 };
 
+// Circuit-breaker & Cooldown Store for Quota Exhaustion (429) & Overloaded Servers (503)
+interface ModelCooldownInfo {
+  until: number;
+  reason: 'quota_exhausted' | 'server_unavailable_503';
+  message: string;
+}
+
+const modelCooldowns = new Map<string, ModelCooldownInfo>();
+
+export const markModelQuotaExhausted = (modelName: string, reason = 'Daily quota exhausted', durationMs = 3600000) => {
+  modelCooldowns.set(modelName, {
+    until: Date.now() + durationMs,
+    reason: 'quota_exhausted',
+    message: reason,
+  });
+  console.warn(
+    `[GeminiClient] Model "${modelName}" marked as QUOTA_EXHAUSTED until ${new Date(Date.now() + durationMs).toISOString()}. Reason: ${reason}`
+  );
+};
+
+export const markModelUnavailable = (modelName: string, reason = 'Server overloaded (503)', durationMs = 60000) => {
+  modelCooldowns.set(modelName, {
+    until: Date.now() + durationMs,
+    reason: 'server_unavailable_503',
+    message: reason,
+  });
+  console.warn(
+    `[GeminiClient] Model "${modelName}" marked as TEMPORARILY_UNAVAILABLE (503) for ${durationMs}ms. Reason: ${reason}`
+  );
+};
+
+export const isModelInCooldown = (modelName: string): boolean => {
+  const cd = modelCooldowns.get(modelName);
+  if (!cd) return false;
+  if (Date.now() >= cd.until) {
+    modelCooldowns.delete(modelName);
+    return false;
+  }
+  return true;
+};
+
+export const resetModelCooldowns = () => {
+  modelCooldowns.clear();
+};
+
+export const getModelCooldownStatus = (): Record<string, { until: number; reason: string; remainingMs: number }> => {
+  const res: Record<string, any> = {};
+  const now = Date.now();
+  for (const [model, info] of modelCooldowns.entries()) {
+    if (now < info.until) {
+      res[model] = {
+        until: info.until,
+        reason: info.reason,
+        remainingMs: info.until - now,
+      };
+    } else {
+      modelCooldowns.delete(model);
+    }
+  }
+  return res;
+};
+
+/**
+ * Detects whether an error represents non-retryable daily or plan quota exhaustion
+ */
+export const isDailyQuotaExhaustion = (error: any): boolean => {
+  const status = error?.status || error?.code || error?.statusCode;
+  const msg = String(error?.message || error || '').toLowerCase();
+
+  const is429OrQuota =
+    status === 429 ||
+    msg.includes('429') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('quota') ||
+    msg.includes('rate limit');
+
+  if (is429OrQuota) {
+    if (
+      msg.includes('per day') ||
+      msg.includes('requests per day') ||
+      msg.includes('generaterequestsperday') ||
+      msg.includes('free tier') ||
+      msg.includes('exceeded your current quota') ||
+      msg.includes('check your plan and billing') ||
+      msg.includes('quota metric') ||
+      msg.includes('quotametric') ||
+      msg.includes('quotaid') ||
+      msg.includes('retry in')
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Detects whether an error represents a 503 high demand / service overloaded condition
+ */
+export const is503Error = (error: any): boolean => {
+  const status = error?.status || error?.code || error?.statusCode;
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    status === 503 ||
+    msg.includes('503') ||
+    msg.includes('unavailable') ||
+    msg.includes('high demand') ||
+    msg.includes('overloaded') ||
+    msg.includes('service unavailable')
+  );
+};
+
 /**
  * Identifies if an error is an eligible transient failure suitable for retry
  */
@@ -211,13 +322,12 @@ export const isRetryableError = (error: any): boolean => {
 
   // Daily quota exhaustion on a specific model cannot be solved by retrying seconds later;
   // immediately step to the next model in the candidate fallback chain.
-  if (msg.includes('per day limit exceeded') || msg.includes('requests per day') || msg.includes('generaterequestsperday')) {
+  if (isDailyQuotaExhaustion(error)) {
     return false;
   }
 
   // Retryable server or network conditions
-  if (status === 503 || status === 500 || status === 429 || status === 408) return true;
-  if (msg.includes('503') || msg.includes('high demand') || msg.includes('unavailable') || msg.includes('overloaded')) return true;
+  if (is503Error(error) || status === 500 || status === 429 || status === 408) return true;
   if (msg.includes('500') || msg.includes('internal error')) return true;
   if (msg.includes('429') || msg.includes('resource_exhausted') || msg.includes('rate limit') || msg.includes('quota')) return true;
   if (msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('timeout') || msg.includes('network error') || msg.includes('fetch failed')) return true;
@@ -281,6 +391,7 @@ let mockGenerateFn: MockGeminiGenerateFn | null = null;
  */
 export const setMockGeminiProvider = (fn: MockGeminiGenerateFn | null) => {
   mockGenerateFn = fn;
+  resetModelCooldowns();
 };
 
 /**
@@ -299,7 +410,12 @@ export const callGeminiWithFallback = async (
 
   const ai = !mockGenerateFn ? getGeminiClient() : null;
   const rawCandidates = options?.candidateModels || Array.from(new Set(options?.model ? [options.model, ...config.fallbackModels] : [config.primaryModel, ...config.fallbackModels]));
-  const candidateModels = Array.from(new Set(rawCandidates));
+  const allCandidates = Array.from(new Set(rawCandidates)).filter(Boolean);
+
+  // Filter models that are not currently in cooldown (e.g. 429 quota exhausted or 503 overloaded)
+  const activeCandidates = allCandidates.filter((m) => !isModelInCooldown(m));
+  const candidateModels = activeCandidates.length > 0 ? activeCandidates : allCandidates;
+
   const jobId = options?.jobId || `job_${correlationId}`;
   const institutionId = options?.institutionId || 'inst_aarshiv_01';
   const pipelineStage = options?.pipelineStage || 'grading';
@@ -350,10 +466,17 @@ export const callGeminiWithFallback = async (
 
       if (attempt > 0) {
         totalRetries++;
-        // Bounded exponential backoff with random jitter
-        const baseBackoff = 1000 * Math.pow(2, attempt - 1);
-        const jitter = Math.random() * 500;
-        const backoffDelay = Math.min(baseBackoff + jitter, 6000);
+        // Short bounded backoff for 503 so we don't stall when a model is overloaded
+        let backoffDelay: number;
+        if (is503Error(lastError)) {
+          const jitter = Math.random() * 200;
+          backoffDelay = Math.min(500 + jitter, 1000);
+        } else {
+          // Bounded exponential backoff with random jitter
+          const baseBackoff = 1000 * Math.pow(2, attempt - 1);
+          const jitter = Math.random() * 500;
+          backoffDelay = Math.min(baseBackoff + jitter, 6000);
+        }
 
         if (Date.now() + backoffDelay >= overallDeadline) {
           usageLedger.recordAttempt({
@@ -597,6 +720,23 @@ export const callGeminiWithFallback = async (
           `[GeminiClient][${correlationId}] Model ${modelName} attempt ${attempt + 1} failed. Retryable: ${retryable}`,
           err?.message || err
         );
+
+        const isQuota429 = isDailyQuotaExhaustion(err);
+        const is503Condition = is503Error(err);
+
+        if (isQuota429) {
+          // Immediately mark model in quota exhaustion cooldown so subsequent calls skip it immediately
+          markModelQuotaExhausted(modelName, String(err?.message || err), 3600000);
+          break; // Never retry daily quota exhaustion
+        }
+
+        if (is503Condition) {
+          // For 503, allow at most 1 retry with short backoff, then mark temporarily unavailable and advance to next model
+          if (attempt >= 1) {
+            markModelUnavailable(modelName, String(err?.message || err), 60000);
+            break;
+          }
+        }
 
         // If error is not retryable or max retries reached for this model, break to try next fallback model
         if (!retryable || attempt === config.maxRetriesPerModel) {
