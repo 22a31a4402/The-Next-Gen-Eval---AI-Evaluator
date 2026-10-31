@@ -177,6 +177,12 @@ export const isRetryableError = (error: any): boolean => {
   if (status === 400 || status === 401 || status === 403 || status === 404) return false;
   if (msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('unauthorized')) return false;
 
+  // Daily quota exhaustion on a specific model cannot be solved by retrying seconds later;
+  // immediately step to the next model in the candidate fallback chain.
+  if (msg.includes('per day limit exceeded') || msg.includes('requests per day') || msg.includes('generaterequestsperday')) {
+    return false;
+  }
+
   // Retryable server or network conditions
   if (status === 503 || status === 500 || status === 429 || status === 408) return true;
   if (msg.includes('503') || msg.includes('high demand') || msg.includes('unavailable') || msg.includes('overloaded')) return true;

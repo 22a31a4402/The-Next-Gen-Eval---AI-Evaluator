@@ -59,6 +59,13 @@ export const PRICING_SCHEDULES: Record<string, PricingVersionConfig> = {
         cachedInputPerMillion: 0.009375,
         notes: 'Ultra-low cost text & objective evaluation model',
       },
+      'gemini-3.5-flash-lite': {
+        modelId: 'gemini-3.5-flash-lite',
+        inputPerMillion: 0.0375,
+        outputPerMillion: 0.15,
+        cachedInputPerMillion: 0.009375,
+        notes: 'High-speed modern Flash-lite evaluation model',
+      },
       'gemini-4-argon': {
         modelId: 'gemini-4-argon',
         inputPerMillion: 0.25,
