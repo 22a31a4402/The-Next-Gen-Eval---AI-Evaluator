@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "tsx test/test_pipeline.ts",
     "test:benchmark": "tsx test/benchmark.ts",
-    "test:audit": "tsx test/audit_verification.ts"
+    "test:audit": "tsx test/audit_verification.ts",
+    "test:metadata": "tsx test/test_evaluation_metadata.ts"
   },
   "dependencies": {
     "@google/genai": "^1.40.0",

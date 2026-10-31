@@ -17,7 +17,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { config } from './config';
 import { usageLedger, GeminiAttemptRecord, UsageSourceType } from './usageLedger';
-import { EvaluationJob } from './types';
+import { EvaluationJob, JobStatus } from './types';
 import { ACTIVE_PRICING_VERSION } from './pricing';
 
 export interface StageUsageDetail {
@@ -40,7 +40,7 @@ export interface EvaluationCostMetadata {
   studentName: string;
   testTitle: string;
   mode: string;
-  evaluationStatus: 'completed' | 'failed' | 'needs_review' | 'cancelled' | 'preprocessing' | 'grading';
+  evaluationStatus: JobStatus;
   error: string | null;
 
   // Model details
@@ -126,7 +126,7 @@ export class EvaluationMetadataService {
     const usageSummary = usageLedger.getJobUsageSummary(job.id, {
       userId: 'system_dev_auditor',
       role: 'operator',
-      institutionId: job.institutionId,
+      institutionId: job.institutionId || 'inst_anatomy_guru',
       name: 'System Developer Auditor',
     });
 
@@ -157,7 +157,7 @@ export class EvaluationMetadataService {
 
     // Models used
     const modelsUsed = Array.from(new Set(calls.map((c) => c.actualModel || c.requestedModel).filter(Boolean)));
-    const primaryModel =
+    const primaryModel: string =
       job.metrics?.modelUsed ||
       modelsUsed[0] ||
       config.primaryModel;
@@ -191,7 +191,7 @@ export class EvaluationMetadataService {
       evaluationId: job.id,
       correlationId: job.correlationId,
       studentName: job.studentName,
-      testTitle: job.testTitle,
+      testTitle: job.testTitle || 'Academic Assessment',
       mode: job.mode,
       evaluationStatus: job.status,
       error: job.error || null,

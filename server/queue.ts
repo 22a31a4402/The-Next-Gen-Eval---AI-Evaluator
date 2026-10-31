@@ -263,6 +263,11 @@ export class EvaluationQueue extends EventEmitter {
     job.currentStepMessage = 'Evaluation job was cancelled by user.';
     job.updatedAt = Date.now();
     this.persistJob(job);
+    try {
+      evaluationMetadataService.generateMetadata(job);
+    } catch (metaErr) {
+      console.warn('[EvaluationQueue] Metadata error on cancel:', metaErr);
+    }
     this.emit('job:cancelled', job);
     return job;
   }
@@ -327,6 +332,11 @@ export class EvaluationQueue extends EventEmitter {
       job.currentStepMessage = 'Evaluation complete and verified';
       job.updatedAt = Date.now();
       this.persistJob(job);
+      try {
+        evaluationMetadataService.generateMetadata(job);
+      } catch (metaErr) {
+        console.warn('[EvaluationQueue] Metadata error on complete:', metaErr);
+      }
       this.emit('job:completed', job);
     } catch (err: any) {
       console.error(`[EvaluationQueue] Job ${job.id} error:`, err?.message || err);
@@ -344,6 +354,11 @@ export class EvaluationQueue extends EventEmitter {
 
       job.updatedAt = Date.now();
       this.persistJob(job);
+      try {
+        evaluationMetadataService.generateMetadata(job);
+      } catch (metaErr) {
+        console.warn('[EvaluationQueue] Metadata error on failure:', metaErr);
+      }
       this.emit('job:failed', job);
     } finally {
       this.activeWorkers--;

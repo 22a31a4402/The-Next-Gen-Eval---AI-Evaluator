@@ -120,6 +120,11 @@ export class EvaluationEngine {
       job.progressPercent = 100;
       job.currentStepMessage = 'Evaluation complete (from cache)';
       onProgress?.(100, job.currentStepMessage);
+      try {
+        evaluationMetadataService.generateMetadata(job);
+      } catch (metaErr) {
+        console.warn('[EvaluationEngine] Metadata error on cache hit:', metaErr);
+      }
 
       return reportWithId;
     }
@@ -260,6 +265,11 @@ export class EvaluationEngine {
       job.draftReport = geminiResult.report; // Preserve unvalidated draft for authorized instructor/admin review
       job.error = `Academic Validation Discrepancy: ${valErr?.message || valErr}`;
       job.currentStepMessage = `Needs Review: ${job.error}`;
+      try {
+        evaluationMetadataService.generateMetadata(job);
+      } catch (metaErr) {
+        console.warn('[EvaluationEngine] Metadata error on discrepancy:', metaErr);
+      }
       throw valErr;
     }
     job.metrics.validationLatencyMs = Date.now() - valStart;
@@ -295,6 +305,11 @@ export class EvaluationEngine {
     job.progressPercent = 100;
     job.currentStepMessage = 'Evaluation successfully verified and completed';
     onProgress?.(100, job.currentStepMessage);
+    try {
+      evaluationMetadataService.generateMetadata(job);
+    } catch (metaErr) {
+      console.warn('[EvaluationEngine] Metadata error on completion:', metaErr);
+    }
 
     return validatedReport;
   }
