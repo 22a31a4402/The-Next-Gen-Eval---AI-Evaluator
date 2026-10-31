@@ -14,8 +14,8 @@ export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   geminiApiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
   // Primary model and fallback chain (using verified live models)
-  primaryModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-  fallbackModels: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'],
+  primaryModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+  fallbackModels: ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
   // Concurrency & Rate Limiting
   maxConcurrentEvaluations: parseInt(process.env.MAX_CONCURRENT_EVALS || '4', 10),
   maxRetriesPerModel: 2,

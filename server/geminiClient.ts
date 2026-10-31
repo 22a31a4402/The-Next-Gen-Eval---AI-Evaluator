@@ -166,6 +166,38 @@ export const canonicalAnswerKeySchema = {
   required: ['questions'],
 };
 
+// Response JSON Schema for student answer script extraction (Stage 1)
+export const studentExtractionSchema = {
+  type: Type.OBJECT,
+  properties: {
+    studentName: { type: Type.STRING },
+    examTitle: { type: Type.STRING },
+    answers: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          questionId: { type: Type.STRING },
+          subquestionId: { type: Type.STRING },
+          studentAnswerText: { type: Type.STRING },
+          diagramDescription: { type: Type.STRING },
+          formulas: { type: Type.ARRAY, items: { type: Type.STRING } },
+          pageReferences: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+          isAttempted: { type: Type.BOOLEAN },
+          confidence: { type: Type.NUMBER },
+          flaggedUncertain: { type: Type.BOOLEAN },
+          flaggedIssue: { type: Type.STRING },
+        },
+        required: ['questionId', 'studentAnswerText', 'isAttempted'],
+      },
+    },
+    unmappedContent: { type: Type.ARRAY, items: { type: Type.STRING } },
+    warnings: { type: Type.ARRAY, items: { type: Type.STRING } },
+    visualEvidenceRetained: { type: Type.BOOLEAN },
+  },
+  required: ['answers'],
+};
+
 /**
  * Identifies if an error is an eligible transient failure suitable for retry
  */
@@ -267,11 +299,7 @@ export const callGeminiWithFallback = async (
 
   const ai = !mockGenerateFn ? getGeminiClient() : null;
   const rawCandidates = options?.candidateModels || Array.from(new Set(options?.model ? [options.model, ...config.fallbackModels] : [config.primaryModel, ...config.fallbackModels]));
-  // Filter out unresponsive or deprecated model identifiers that hang
-  const candidateModels = rawCandidates.filter((m) => m !== 'gemini-3.8-flash' && m !== 'gemini-flash-latest');
-  if (candidateModels.length === 0) {
-    candidateModels.push('gemini-2.5-flash');
-  }
+  const candidateModels = Array.from(new Set(rawCandidates));
   const jobId = options?.jobId || `job_${correlationId}`;
   const institutionId = options?.institutionId || 'inst_aarshiv_01';
   const pipelineStage = options?.pipelineStage || 'grading';
@@ -387,6 +415,8 @@ export const callGeminiWithFallback = async (
               ? options.responseSchema
               : pipelineStage === 'answer_key_generation' || pipelineStage === 'answer_key_extraction'
               ? canonicalAnswerKeySchema
+              : pipelineStage === 'student_extraction' || pipelineStage === 'extraction'
+              ? studentExtractionSchema
               : evaluationReportSchema;
 
           const generateConfig: any = {
@@ -400,20 +430,23 @@ export const callGeminiWithFallback = async (
             generateConfig.responseSchema = schema;
           }
 
-          // Configure thinkingBudget to avoid token bloat on structured outputs
-          if (typeof options?.thinkingBudget === 'number') {
-            generateConfig.thinkingConfig = {
-              thinkingBudget: options.thinkingBudget,
-            };
-          } else if (
-            pipelineStage === 'answer_key_generation' ||
-            pipelineStage === 'answer_key_extraction' ||
-            pipelineStage === 'student_extraction'
-          ) {
-            // For structured extractions & answer keys, set thinkingBudget to 0 to eliminate 4000+ chain-of-thought tokens and cut latency in half
-            generateConfig.thinkingConfig = {
-              thinkingBudget: 0,
-            };
+          // Configure thinkingBudget to avoid token bloat on structured outputs (only for models that support it, e.g. 2.5 series)
+          const supportsThinking = modelName.includes('2.5');
+          if (supportsThinking) {
+            if (typeof options?.thinkingBudget === 'number') {
+              generateConfig.thinkingConfig = {
+                thinkingBudget: options.thinkingBudget,
+              };
+            } else if (
+              pipelineStage === 'answer_key_generation' ||
+              pipelineStage === 'answer_key_extraction' ||
+              pipelineStage === 'student_extraction'
+            ) {
+              // For structured extractions & answer keys, set thinkingBudget to 0 to eliminate 4000+ chain-of-thought tokens and cut latency in half
+              generateConfig.thinkingConfig = {
+                thinkingBudget: 0,
+              };
+            }
           }
 
           return await ai!.models.generateContent({

@@ -148,6 +148,7 @@ NEVER fabricate missing answers or synthetic scores.`;
       `ext_${correlationId}`,
       {
         ...options,
+        responseSchema: studentExtractionSchema,
         pipelineStage: 'student_extraction',
       }
     );
@@ -184,17 +185,31 @@ NEVER fabricate missing answers or synthetic scores.`;
 
     const rawAnswers: any[] = Array.isArray(raw.answers) ? raw.answers : [];
 
-    // Map of extracted answers by questionId
+    // Helper to normalize question keys for robust lookup (handles "1", "Q1", "Question 1", "2.a", "2(a)", "2a")
+    const normalizeQKey = (key: string): string => {
+      return String(key || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^(question|q)[\s.:_-]*/i, '')
+        .replace(/[()[\]]/g, '')
+        .replace(/[-_.\s]+/g, '');
+    };
+
+    // Map of extracted answers by multiple indexed keys
     const extractedMap = new Map<string, any>();
     for (const a of rawAnswers) {
       if (a) {
         if (a.questionId) {
-          const cleanId = String(a.questionId).trim();
-          extractedMap.set(cleanId, a);
+          const rawId = String(a.questionId).trim();
+          extractedMap.set(rawId, a);
+          extractedMap.set(rawId.toLowerCase(), a);
+          extractedMap.set(normalizeQKey(rawId), a);
         }
         const completeAId = getCompleteQuestionIdentifier(a);
         if (completeAId) {
           extractedMap.set(completeAId, a);
+          extractedMap.set(completeAId.toLowerCase(), a);
+          extractedMap.set(normalizeQKey(completeAId), a);
         }
       }
     }
@@ -206,10 +221,22 @@ NEVER fabricate missing answers or synthetic scores.`;
     for (const q of canonicalKey.questions) {
       const qId = q.questionId;
       const completeQId = getCompleteQuestionIdentifier(q);
-      const extracted = extractedMap.get(qId) || (completeQId ? extractedMap.get(completeQId) : undefined);
+      const extracted =
+        extractedMap.get(qId) ||
+        extractedMap.get(qId.toLowerCase()) ||
+        extractedMap.get(normalizeQKey(qId)) ||
+        (completeQId ? extractedMap.get(completeQId) : undefined) ||
+        (completeQId ? extractedMap.get(completeQId.toLowerCase()) : undefined) ||
+        (completeQId ? extractedMap.get(normalizeQKey(completeQId)) : undefined);
 
       if (extracted) {
-        const isAttempted = Boolean(extracted.isAttempted && extracted.studentAnswerText && extracted.studentAnswerText.trim() !== '[Not Attempted]');
+        const rawText = extracted.studentAnswerText ? String(extracted.studentAnswerText).trim() : '';
+        const isBlankOrUnattempted =
+          rawText === '' ||
+          /^\[?(not attempted|unattempted|omitted|blank|left blank|skipped|nil|na|none)\]?$/i.test(rawText);
+
+        // Robust attempted check: if student text has >15 characters and isn't a blank flag, treat as attempted
+        const isAttempted = !isBlankOrUnattempted && (Boolean(extracted.isAttempted) || rawText.length > 15);
         const flaggedUncertain = Boolean(extracted.flaggedUncertain);
         const flaggedIssue = extracted.flaggedIssue ? String(extracted.flaggedIssue).trim() : undefined;
         const diagramDesc = extracted.diagramDescription ? String(extracted.diagramDescription).trim() : undefined;
@@ -224,7 +251,7 @@ NEVER fabricate missing answers or synthetic scores.`;
         normalizedAnswers.push({
           questionId: qId,
           subquestionId: q.subquestionId || extracted.subquestionId || undefined,
-          studentAnswerText: isAttempted ? String(extracted.studentAnswerText).trim() : '[Not Attempted]',
+          studentAnswerText: isAttempted ? rawText : '[Not Attempted]',
           diagramDescription: diagramDesc,
           formulas: formulas.length > 0 ? formulas : undefined,
           pageReferences: pageRefs.length > 0 ? pageRefs : undefined,
