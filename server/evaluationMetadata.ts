@@ -3,12 +3,14 @@
  *
  * Implements strict server-side audit requirements:
  * - Generates metadata.json in private backend directory (.data/evaluations/metadata/)
+ * - Emits structured developer log with exact prefix: [ANATOMY GURU EVALUATION COST METADATA]
  * - Records actual Gemini input/output/cached tokens, primary and fallback models
  * - Records isolated extraction and grading stage costs (USD and INR)
- * - Records total retries, API call attempts, and pipeline latency
+ * - Records total retries, fallbacks, API call attempts, and API & pipeline latency
  * - Preserves partial usage data for failed/aborted evaluations
  * - Never fabricates missing token counts or costs (strict null preservation)
  * - Remains strictly server-side, emitted only to developer logs (never dashboards or student reports)
+ * - Never includes student names, student answers, or API keys in the developer log
  * - Integrates with existing usageLedger and pricing engine
  */
 
@@ -77,9 +79,11 @@ export interface EvaluationCostMetadata {
 
   // Retries, API calls, and latency
   retries: number;
+  fallbacks: number;
   apiCalls: number;
   successfulCalls: number;
   failedCalls: number;
+  apiLatencyMs: number;
   latencyMs: number;
 
   // Pricing configuration and conversion details
@@ -162,12 +166,14 @@ export class EvaluationMetadataService {
       modelsUsed[0] ||
       config.primaryModel;
 
-    // Total retries and calls
+    // Total retries, fallbacks, and calls
     const retriedCalls = calls.filter((c) => c.attemptNumber > 1).length;
+    const fallbackCalls = calls.filter((c) => c.isFallback).length;
     const successfulCalls = calls.filter((c) => c.status === 'success').length;
     const failedCalls = calls.filter((c) => c.status === 'failed' || c.status === 'timeout').length;
 
     // Latency
+    const apiLatencyMs = calls.reduce((acc, c) => acc + (c.latencyMs || 0), 0);
     const latencyMs = job.metrics?.totalLatencyMs ?? (
       job.metrics?.startTime ? Date.now() - job.metrics.startTime : 0
     );
@@ -220,9 +226,11 @@ export class EvaluationMetadataService {
       },
 
       retries: retriedCalls,
+      fallbacks: fallbackCalls,
       apiCalls: calls.length,
       successfulCalls,
       failedCalls,
+      apiLatencyMs,
       latencyMs,
 
       pricing: {
@@ -536,25 +544,67 @@ export class EvaluationMetadataService {
 
   /**
    * Emits structured evaluation cost and usage metrics exclusively to developer logs
+   * with the exact prefix [ANATOMY GURU EVALUATION COST METADATA].
+   * Kept strictly server-side; NEVER exposes student personal data, answers, or credentials.
    */
   private emitDeveloperLog(meta: EvaluationCostMetadata) {
     const costUsdStr = meta.totalCost.usd !== null ? `$${meta.totalCost.usd.toFixed(6)}` : 'N/A';
     const costInrStr = meta.totalCost.inr !== null ? `₹${meta.totalCost.inr.toFixed(4)}` : 'N/A';
-    const extCostStr = meta.extractionCost.usd !== null ? `$${meta.extractionCost.usd.toFixed(6)}` : 'N/A';
-    const grdCostStr = meta.gradingCost.usd !== null ? `$${meta.gradingCost.usd.toFixed(6)}` : 'N/A';
+    const extCostUsdStr = meta.stages.extraction.status === 'skipped'
+      ? 'SKIPPED'
+      : (meta.extractionCost.usd !== null ? `$${meta.extractionCost.usd.toFixed(6)}` : 'N/A');
+    const extCostInrStr = meta.stages.extraction.status === 'skipped'
+      ? 'SKIPPED'
+      : (meta.extractionCost.inr !== null ? `₹${meta.extractionCost.inr.toFixed(4)}` : 'N/A');
+    const grdCostUsdStr = meta.gradingCost.usd !== null ? `$${meta.gradingCost.usd.toFixed(6)}` : 'N/A';
+    const grdCostInrStr = meta.gradingCost.inr !== null ? `₹${meta.gradingCost.inr.toFixed(4)}` : 'N/A';
+
+    // Figure status: actual, estimated, partial, or unavailable
+    let figureStatus: 'actual' | 'estimated' | 'partial' | 'unavailable' = 'unavailable';
+    if (meta.zeroFabrication.isCostCalculable) {
+      if (meta.zeroFabrication.isPartial) {
+        figureStatus = 'partial';
+      } else if (meta.zeroFabrication.dataSource === 'ACTUAL_API') {
+        figureStatus = 'actual';
+      } else {
+        figureStatus = 'estimated';
+      }
+    } else if (meta.zeroFabrication.isPartial) {
+      figureStatus = 'partial';
+    } else {
+      figureStatus = 'unavailable';
+    }
+
+    const extInTokens = meta.stages.extraction.inputTokens !== null ? meta.stages.extraction.inputTokens : 'null';
+    const extOutTokens = meta.stages.extraction.outputTokens !== null ? meta.stages.extraction.outputTokens : 'null';
+    const grdInTokens = meta.stages.grading.inputTokens !== null ? meta.stages.grading.inputTokens : 'null';
+    const grdOutTokens = meta.stages.grading.outputTokens !== null ? meta.stages.grading.outputTokens : 'null';
+    const cachedTokens = meta.tokens.cachedTokens !== null ? meta.tokens.cachedTokens : 'null';
+    const totInTokens = meta.tokens.inputTokens !== null ? meta.tokens.inputTokens : 'null';
+    const totOutTokens = meta.tokens.outputTokens !== null ? meta.tokens.outputTokens : 'null';
 
     console.log(
-      `[DEVELOPER EVALUATION COST METADATA] ` +
+      `[ANATOMY GURU EVALUATION COST METADATA] ` +
       `evaluationId=${meta.evaluationId} ` +
       `status=${meta.evaluationStatus} ` +
-      `model=${meta.model} ` +
-      `tokens(in=${meta.tokens.inputTokens ?? 'null'},out=${meta.tokens.outputTokens ?? 'null'},cached=${meta.tokens.cachedTokens ?? 'null'}) ` +
-      `extractionCost=${extCostStr} ` +
-      `gradingCost=${grdCostStr} ` +
-      `totalCost=${costUsdStr} (${costInrStr}) ` +
-      `apiCalls=${meta.apiCalls} ` +
+      `models=${meta.modelsUsed.join(',')} ` +
+      `totalApiCalls=${meta.apiCalls} (successful=${meta.successfulCalls},failed=${meta.failedCalls}) ` +
       `retries=${meta.retries} ` +
-      `latency=${meta.latencyMs}ms ` +
+      `fallbacks=${meta.fallbacks} ` +
+      `extractionTokens(in=${extInTokens},out=${extOutTokens}) ` +
+      `gradingTokens(in=${grdInTokens},out=${grdOutTokens}) ` +
+      `cachedTokens=${cachedTokens} ` +
+      `totalTokens(in=${totInTokens},out=${totOutTokens}) ` +
+      `extractionCost=${extCostUsdStr} (${extCostInrStr}) ` +
+      `gradingCost=${grdCostUsdStr} (${grdCostInrStr}) ` +
+      `totalCost=${costUsdStr} (${costInrStr}) ` +
+      `exchangeRate=₹${meta.pricing.exchangeRateUsed} ` +
+      `apiLatency=${meta.apiLatencyMs}ms ` +
+      `totalEvaluationTime=${meta.latencyMs}ms ` +
+      `figureStatus=${figureStatus} ` +
+      `dataSource=${meta.zeroFabrication.dataSource} ` +
+      `completeness=${meta.zeroFabrication.usageCompleteness} ` +
+      `calculable=${meta.zeroFabrication.isCostCalculable} ` +
       `partial=${meta.zeroFabrication.isPartial}`
     );
   }
