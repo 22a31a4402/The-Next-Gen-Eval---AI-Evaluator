@@ -573,3 +573,48 @@ export async function deleteAnswerKeyApi(id: string, token?: string): Promise<bo
   });
   return res.ok;
 }
+
+export async function findApprovedKeyForQuestionPaperApi(
+  questionPaper: FileData,
+  token?: string
+): Promise<CanonicalAnswerKey | null> {
+  const authToken = token || getClientAuthToken();
+  try {
+    const res = await fetch('/api/answer-keys/find-by-qp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        questionPaper: {
+          name: questionPaper.name,
+          text: questionPaper.text,
+          base64: questionPaper.base64,
+          mimeType: questionPaper.mimeType,
+        },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await safeParseResponseJson<any>(res, 'Find Answer Key by QP');
+    return data.answerKey || null;
+  } catch (e) {
+    console.warn('[findApprovedKeyForQuestionPaperApi] Error:', e);
+    return null;
+  }
+}
+
+export async function getLatestApprovedKeyApi(token?: string): Promise<CanonicalAnswerKey | null> {
+  const authToken = token || getClientAuthToken();
+  try {
+    const res = await fetch('/api/answer-keys/latest-approved', {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    if (!res.ok) return null;
+    const data = await safeParseResponseJson<any>(res, 'Get Latest Approved Key');
+    return data.answerKey || null;
+  } catch (e) {
+    console.warn('[getLatestApprovedKeyApi] Error:', e);
+    return null;
+  }
+}

@@ -97,10 +97,14 @@ export class EvaluationCacheService {
       hash.update(src.base64);
       hash.update('\n');
     }
+    const studentName = (payload as any).studentName;
+    if (studentName) {
+      hash.update(`STUDENT_NAME:${studentName}\n`);
+    }
 
-    // 3. Full Hashing of Question Paper
-    if (payload.questionPaper) {
-      const qp = payload.questionPaper;
+    // 3. Full Hashing of Question Paper (direct payload or from canonical answer key)
+    const qp = payload.questionPaper || (payload as any).canonicalAnswerKey?.sourceQuestionPaperDoc;
+    if (qp) {
       hash.update(`QP_NAME:${qp.name || ''}\n`);
       hash.update(`QP_MIME:${qp.mimeType || ''}\n`);
       if (qp.text) {
@@ -122,9 +126,19 @@ export class EvaluationCacheService {
       hash.update(`CANONICAL_AK_VERSION:${cak.version}\n`);
       hash.update(`CANONICAL_AK_STATUS:${cak.status}\n`);
       hash.update(`CANONICAL_AK_TOTAL:${cak.totalMaxMarks}\n`);
+      if (cak.printedMaxMarks !== undefined) {
+        hash.update(`CANONICAL_AK_PRINTED:${cak.printedMaxMarks}\n`);
+      }
       if (Array.isArray(cak.questions)) {
         for (const q of cak.questions) {
-          hash.update(`Q:${q.questionId}:${q.maxMarks}:${q.referenceAnswer || ''}\n`);
+          const concepts = Array.isArray(q.expectedConcepts) ? q.expectedConcepts.join('|') : '';
+          const alts = Array.isArray(q.acceptableAlternatives) ? q.acceptableAlternatives.join('|') : '';
+          const criteria = Array.isArray(q.markingCriteria) ? q.markingCriteria.join('|') : '';
+          const altRule = q.isAlternative ? `alt:${q.alternativeGroup || ''}` : '';
+          const selRule = q.selectionGroup ? `sel:${q.selectionGroup}:${q.requiredAttempts || 1}` : '';
+          hash.update(
+            `Q:${q.questionId}:${q.maxMarks}:${q.referenceAnswer || ''}:${concepts}:${alts}:${criteria}:${altRule}:${selRule}\n`
+          );
         }
       }
     } else if (payload.answerKey) {
@@ -183,6 +197,14 @@ export class EvaluationCacheService {
           console.warn(`[CacheService] Unauthorized cache access attempt across institutions: user=${userContext.institutionId}, cached=${cachedInst}`);
           return null;
         }
+
+        // Cross-user isolation: evaluators can only access evaluations they created
+        if (userContext.role === 'evaluator') {
+          if (entry.createdBy && entry.createdBy !== userContext.userId) {
+            console.warn(`[CacheService] Unauthorized cache access attempt across evaluators: user=${userContext.userId}, cached=${entry.createdBy}`);
+            return null;
+          }
+        }
       }
 
       this.cacheHits++;
@@ -229,6 +251,11 @@ export class EvaluationCacheService {
       const tempPath = path.join(this.cacheDir, `${entry.cacheKey}.tmp.${Date.now()}`);
       const filePath = path.join(this.cacheDir, `${entry.cacheKey}.json`);
       fs.writeFileSync(tempPath, JSON.stringify(entry, null, 2), 'utf-8');
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch {}
       fs.renameSync(tempPath, filePath);
     } catch (e) {
       console.warn('[CacheService] Failed persisting to disk cache:', e);
@@ -262,7 +289,8 @@ export class EvaluationCacheService {
     hash.update(String(sourceDoc.name || '') + '|');
     hash.update(String(sourceDoc.text || '') + '|');
     if (sourceDoc.base64) {
-      hash.update(sourceDoc.base64.substring(0, 5000) + '|');
+      hash.update(String(sourceDoc.base64.length) + '|');
+      hash.update(sourceDoc.base64 + '|');
     }
     hash.update(String(canonicalKey.id || '') + '|');
     hash.update(String(canonicalKey.version || 1));
@@ -301,6 +329,11 @@ export class EvaluationCacheService {
       const tempPath = path.join(this.cacheDir, `ext_${cacheKey}.tmp.${Date.now()}`);
       const filePath = path.join(this.cacheDir, `ext_${cacheKey}.json`);
       fs.writeFileSync(tempPath, JSON.stringify(script, null, 2), 'utf-8');
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch {}
       fs.renameSync(tempPath, filePath);
     } catch (e) {
       console.warn('[CacheService] Failed saving cached extraction to disk:', e);

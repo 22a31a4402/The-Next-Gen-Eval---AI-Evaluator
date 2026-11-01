@@ -177,6 +177,7 @@ export class EvaluationQueue extends EventEmitter {
       testTitle: payload.testTitle || 'Academic Assessment',
       institutionId: userContext?.institutionId || 'inst_aarshiv_01',
       createdBy: userContext?.userId || 'anonymous',
+      creatorRole: userContext?.role || 'instructor',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       answerKeyId: payload.answerKeyId || payload.canonicalAnswerKey?.id,

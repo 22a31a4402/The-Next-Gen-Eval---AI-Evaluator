@@ -17,7 +17,9 @@ import {
   generateAnswerKeyApi, 
   extractAnswerKeyApi, 
   updateAnswerKeyApi, 
-  approveAnswerKeyApi 
+  approveAnswerKeyApi,
+  listAnswerKeysApi,
+  findApprovedKeyForQuestionPaperApi
 } from '../services/geminiService';
 import { AnswerKeyReviewModal } from './AnswerKeyReviewModal';
 
@@ -50,6 +52,48 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
   const [processingStep, setProcessingStep] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [approvedKeysList, setApprovedKeysList] = useState<CanonicalAnswerKey[]>([]);
+  const [isCheckingMappedKey, setIsCheckingMappedKey] = useState(false);
+
+  // Fetch previously approved answer keys for the user's institution
+  const loadApprovedKeys = async () => {
+    try {
+      const keys = await listAnswerKeysApi();
+      const approved = (keys || []).filter((k) => k.status === 'approved');
+      setApprovedKeysList(approved);
+    } catch (e) {
+      console.warn('[AnswerKeySelector] Failed loading approved keys:', e);
+    }
+  };
+
+  React.useEffect(() => {
+    loadApprovedKeys();
+  }, []);
+
+  // When a Question Paper file is selected or uploaded, auto-check if an approved answer key is already mapped
+  React.useEffect(() => {
+    let isCancelled = false;
+    const checkMatchingKey = async () => {
+      if (!questionPaperFile || currentAnswerKey?.status === 'approved') return;
+      setIsCheckingMappedKey(true);
+      try {
+        const qpData = await fileToData(questionPaperFile);
+        const mapped = await findApprovedKeyForQuestionPaperApi(qpData);
+        if (mapped && !isCancelled) {
+          onAnswerKeyChange(mapped);
+          setErrorMessage(null);
+        }
+      } catch (err) {
+        // Silently continue if no match
+      } finally {
+        if (!isCancelled) setIsCheckingMappedKey(false);
+      }
+    };
+    checkMatchingKey();
+    return () => {
+      isCancelled = true;
+    };
+  }, [questionPaperFile]);
 
   // Handle Mode 1: Generate Answer Key Using AI
   const handleGenerateKey = async () => {
@@ -230,6 +274,66 @@ export const AnswerKeySelector: React.FC<AnswerKeySelectorProps> = ({
       ) : (
         /* If no answer key is selected: Mode selection and generation form */
         <div className="space-y-6">
+          {/* Quick Select: Previously Approved Answer Keys */}
+          {approvedKeysList.length > 0 && (
+            <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md border border-slate-800">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">
+                    ✓
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-black uppercase tracking-wider text-slate-200">
+                      Previously Approved Answer Keys ({approvedKeysList.length})
+                    </h5>
+                    <p className="text-[11px] text-slate-400">
+                      Select an existing approved exam to directly evaluate student scripts without re-uploading documents.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                {approvedKeysList.map((key) => (
+                  <button
+                    key={key.id}
+                    type="button"
+                    onClick={() => {
+                      onAnswerKeyChange(key);
+                      setErrorMessage(null);
+                    }}
+                    className="p-3 bg-slate-800 hover:bg-slate-700 text-left rounded-xl border border-slate-700/60 hover:border-emerald-500/50 transition-all cursor-pointer group flex flex-col justify-between"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <span className="text-xs font-bold text-white group-hover:text-emerald-300 transition-colors truncate">
+                          {key.title || 'Examination Key'}
+                        </span>
+                        <span className="px-1.5 py-0.5 bg-emerald-950 text-emerald-400 text-[9px] font-black rounded-md border border-emerald-800 shrink-0">
+                          v{key.version}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400">
+                        {key.subject ? `${key.subject} • ` : ''}{key.questions?.length || 0} Questions • {key.totalMaxMarks} Marks
+                      </p>
+                    </div>
+                    <div className="mt-2 pt-1 border-t border-slate-700/40 flex items-center justify-between text-[10px] text-emerald-400 font-bold">
+                      <span>Use this key</span>
+                      <span>→</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isCheckingMappedKey && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-2 text-xs font-medium text-blue-800">
+              <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              <span>Checking if an approved answer key is already mapped to this question paper...</span>
+            </div>
+          )}
+
           {/* Mode Selection Cards */}
           <div className="grid sm:grid-cols-2 gap-4">
             {/* Mode 1 Card */}

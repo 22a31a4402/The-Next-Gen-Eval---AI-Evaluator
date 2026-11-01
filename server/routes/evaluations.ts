@@ -132,7 +132,15 @@ evaluationsRouter.post('/', (req: Request, res: Response): void => {
         return;
       }
       resolvedCanonicalKey = rawCanonicalAnswerKey;
+    } else if (questionPaper) {
+      // Auto-detect mapped approved answer key for this question paper
+      const mapped = answerKeyService.findApprovedKeyForQuestionPaper(questionPaper, user);
+      if (mapped) {
+        resolvedCanonicalKey = mapped;
+      }
     }
+
+    const effectiveQuestionPaper = questionPaper || resolvedCanonicalKey?.sourceQuestionPaperDoc;
 
     if (questionPaper) {
       const qpError = validateDocumentPayload(questionPaper, 'questionPaper');
@@ -171,7 +179,7 @@ evaluationsRouter.post('/', (req: Request, res: Response): void => {
     const job = evaluationQueue.enqueue(
       {
         sourceDoc,
-        questionPaper,
+        questionPaper: effectiveQuestionPaper,
         answerKey,
         answerKeyId: resolvedCanonicalKey ? resolvedCanonicalKey.id : answerKeyId,
         canonicalAnswerKey: resolvedCanonicalKey,

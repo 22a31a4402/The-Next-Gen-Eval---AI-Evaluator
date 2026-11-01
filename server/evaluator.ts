@@ -67,23 +67,25 @@ export class EvaluationEngine {
     onProgress?.(15, job.currentStepMessage);
 
     const prepStart = Date.now();
+    const qpDoc = payload.questionPaper || activeCanonicalKey?.sourceQuestionPaperDoc;
     const cacheKey = evaluationCache.generateFingerprint({
       sourceDoc: payload.sourceDoc,
-      questionPaper: payload.questionPaper,
+      questionPaper: qpDoc,
       answerKey: payload.answerKey,
       canonicalAnswerKey: activeCanonicalKey,
       facultyNotes: payload.facultyNotes,
       mode,
       model: config.primaryModel,
       institutionId: job.institutionId,
+      studentName: job.studentName,
     } as any);
 
     job.metrics.preprocessingLatencyMs = Date.now() - prepStart;
 
-    // Check Cache with tenant authorization
+    // Check Cache with tenant authorization and role check
     const cached = evaluationCache.get(cacheKey, {
       userId: job.createdBy || 'anonymous',
-      role: 'instructor',
+      role: (job.creatorRole as any) || 'instructor',
       institutionId: job.institutionId || 'inst_aarshiv_01',
       name: 'System',
     });

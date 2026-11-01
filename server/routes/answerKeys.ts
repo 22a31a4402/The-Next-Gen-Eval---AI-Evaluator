@@ -149,6 +149,39 @@ answerKeysRouter.get('/', (req: Request, res: Response): void => {
 });
 
 /**
+ * POST /api/answer-keys/find-by-qp
+ * Look up an approved answer key mapped to a question paper
+ */
+answerKeysRouter.post('/find-by-qp', (req: Request, res: Response): void => {
+  try {
+    const user = (req as any).user as UserContext;
+    const { questionPaper } = req.body;
+    if (!questionPaper) {
+      res.status(400).json({ error: 'questionPaper document is required.' });
+      return;
+    }
+    const found = answerKeyService.findApprovedKeyForQuestionPaper(questionPaper, user);
+    res.json({ answerKey: found || null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to search answer keys.' });
+  }
+});
+
+/**
+ * GET /api/answer-keys/latest-approved
+ * Retrieve the latest approved answer key for the user's institution
+ */
+answerKeysRouter.get('/latest-approved', (req: Request, res: Response): void => {
+  try {
+    const user = (req as any).user as UserContext;
+    const latest = answerKeyService.getLatestApprovedKey(user);
+    res.json({ answerKey: latest || null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch latest approved answer key.' });
+  }
+});
+
+/**
  * GET /api/answer-keys/:id
  * Retrieve specific answer key
  */

@@ -928,6 +928,7 @@ export interface CanonicalAnswerKey {
   selectionRules?: SelectionRule[];
   questions: CanonicalQuestionKey[];
   warnings?: string[];
+  questionPaperFingerprint?: string;
   metadata: {
     institutionId: string;
     createdBy: string;
@@ -1050,6 +1051,7 @@ export interface EvaluationJob {
   mode: EvaluationMode;
   institutionId?: string;
   createdBy?: string;
+  creatorRole?: UserRole;
   createdAt: number;
   updatedAt: number;
   report?: EvaluationReport;

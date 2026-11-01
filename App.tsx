@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash, Check, Sparkles, Sliders } from 'lucide-react';
-import { generateStructuredFeedback, parseActionableError, EvaluationMode } from './services/geminiService';
+import { generateStructuredFeedback, parseActionableError, EvaluationMode, getLatestApprovedKeyApi } from './services/geminiService';
 import { EvaluationReport, FileData, HistoryItem, CanonicalAnswerKey } from './types';
 import FileUploader from './components/FileUploader';
 import { AnswerKeySelector } from './components/AnswerKeySelector';
@@ -161,6 +161,18 @@ const App: React.FC = () => {
       console.warn("Failed to update nextgen_active_answer_key in localStorage:", e);
     }
   }, [currentAnswerKey]);
+
+  useEffect(() => {
+    if (!currentAnswerKey) {
+      getLatestApprovedKeyApi()
+        .then((latest) => {
+          if (latest && latest.status === 'approved') {
+            setCurrentAnswerKey(latest);
+          }
+        })
+        .catch((e) => console.warn('Failed restoring latest approved key:', e));
+    }
+  }, []);
   const [editingSingleReport, setEditingSingleReport] = useState<EvaluationReport | null>(null);
 
   // Helper handlers to edit single evaluation report

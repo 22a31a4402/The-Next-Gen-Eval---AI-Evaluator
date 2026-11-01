@@ -35,6 +35,24 @@ import { callGeminiWithFallback, canonicalAnswerKeySchema } from './geminiClient
 import { isVisualEvidenceNeeded } from './documentProcessor';
 import { config } from './config';
 
+export function computeQuestionPaperFingerprint(doc?: DocumentPayload): string {
+  if (!doc) return '';
+  const hash = crypto.createHash('sha256');
+  if (doc.name) hash.update(`NAME:${doc.name}\n`);
+  if (doc.mimeType) hash.update(`MIME:${doc.mimeType}\n`);
+  if (doc.text) {
+    hash.update(`TEXT_LEN:${doc.text.length}\n`);
+    hash.update(doc.text);
+    hash.update('\n');
+  }
+  if (doc.base64) {
+    hash.update(`B64_LEN:${doc.base64.length}\n`);
+    hash.update(doc.base64);
+    hash.update('\n');
+  }
+  return hash.digest('hex');
+}
+
 export class AnswerKeyValidationError extends Error {
   public code = 'ANSWER_KEY_VALIDATION_ERROR';
   constructor(message: string) {
@@ -98,6 +116,9 @@ export class AnswerKeyService {
             const raw = fs.readFileSync(filePath, 'utf-8');
             const parsed: CanonicalAnswerKey = JSON.parse(raw);
             if (parsed && parsed.id) {
+              if (!parsed.questionPaperFingerprint && parsed.sourceQuestionPaperDoc) {
+                parsed.questionPaperFingerprint = computeQuestionPaperFingerprint(parsed.sourceQuestionPaperDoc);
+              }
               this.cache.set(parsed.id, parsed);
             }
           } catch (e) {
@@ -114,7 +135,15 @@ export class AnswerKeyService {
     this.cache.set(key.id, key);
     const filePath = path.join(this.storageDir, `${key.id}.json`);
     const tmpPath = `${filePath}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    if (!key.questionPaperFingerprint && key.sourceQuestionPaperDoc) {
+      key.questionPaperFingerprint = computeQuestionPaperFingerprint(key.sourceQuestionPaperDoc);
+    }
     fs.writeFileSync(tmpPath, JSON.stringify(key, null, 2), 'utf-8');
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch {}
     fs.renameSync(tmpPath, filePath);
   }
 
@@ -380,6 +409,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         updatedAt: Date.now(),
         sourceDocName: questionPaper.name,
       },
+      questionPaperFingerprint: computeQuestionPaperFingerprint(questionPaper),
       sourceQuestionPaperDoc: questionPaper,
     };
 
@@ -656,6 +686,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         updatedAt: Date.now(),
         sourceDocName: answerKeyDoc.name,
       },
+      questionPaperFingerprint: questionPaperDoc ? computeQuestionPaperFingerprint(questionPaperDoc) : undefined,
       sourceQuestionPaperDoc: questionPaperDoc,
       sourceAnswerKeyDoc: answerKeyDoc,
     };
@@ -680,6 +711,60 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
   /**
    * Lists all answer keys for a specific institution
    */
+/**
+   * Persistently maps a question paper to its approved canonical answer key.
+   * Enables users to directly upload student answer scripts on subsequent visits
+   * without regenerating or re-uploading the answer key.
+   */
+  public findApprovedKeyForQuestionPaper(
+    questionPaper: DocumentPayload,
+    user: UserContext
+  ): CanonicalAnswerKey | null {
+    const targetFingerprint = computeQuestionPaperFingerprint(questionPaper);
+    if (!targetFingerprint) return null;
+
+    const all = Array.from(this.cache.values());
+    const matching = all.filter((k) => {
+      if (k.status !== 'approved') return false;
+      if (user.role !== 'operator' && k.metadata.institutionId !== user.institutionId) return false;
+
+      if (k.questionPaperFingerprint && k.questionPaperFingerprint === targetFingerprint) {
+        return true;
+      }
+      if (k.sourceQuestionPaperDoc) {
+        const kFp = k.questionPaperFingerprint || computeQuestionPaperFingerprint(k.sourceQuestionPaperDoc);
+        if (kFp === targetFingerprint) return true;
+        if (questionPaper.name && k.sourceQuestionPaperDoc.name === questionPaper.name) {
+          if (questionPaper.text && k.sourceQuestionPaperDoc.text && questionPaper.text.trim() === k.sourceQuestionPaperDoc.text.trim()) {
+            return true;
+          }
+          if (questionPaper.base64 && k.sourceQuestionPaperDoc.base64 && questionPaper.base64 === k.sourceQuestionPaperDoc.base64) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+
+    if (matching.length === 0) return null;
+    return matching.sort((a, b) => (b.metadata.approvedAt || b.metadata.updatedAt) - (a.metadata.approvedAt || a.metadata.updatedAt))[0];
+  }
+
+  /**
+   * Retrieves the most recently approved canonical answer key for the user's institution
+   */
+  public getLatestApprovedKey(user: UserContext): CanonicalAnswerKey | null {
+    const all = Array.from(this.cache.values());
+    const approved = all.filter((k) => {
+      if (k.status !== 'approved') return false;
+      if (user.role !== 'operator' && k.metadata.institutionId !== user.institutionId) return false;
+      return true;
+    });
+
+    if (approved.length === 0) return null;
+    return approved.sort((a, b) => (b.metadata.approvedAt || b.metadata.updatedAt) - (a.metadata.approvedAt || a.metadata.updatedAt))[0];
+  }
+
   public listAnswerKeys(user: UserContext): CanonicalAnswerKey[] {
     const all = Array.from(this.cache.values());
     if (user.role === 'operator') {

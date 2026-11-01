@@ -860,6 +860,7 @@ export interface CanonicalAnswerKey {
   selectionRules?: SelectionRule[];
   questions: CanonicalQuestionKey[];
   warnings?: string[];
+  questionPaperFingerprint?: string;
   metadata: {
     institutionId: string;
     createdBy: string;
