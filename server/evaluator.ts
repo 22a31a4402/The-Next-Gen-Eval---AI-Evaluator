@@ -25,6 +25,7 @@ import {
   StudentExtractedScript,
   getCompleteQuestionIdentifier,
   detectAndNormalizeChoiceGroups,
+  resolveQuestionBranchId,
 } from './types';
 import { config } from './config';
 import { ACTIVE_PRICING_VERSION } from './pricing';
@@ -447,62 +448,36 @@ export class EvaluationEngine {
       }
     }
 
-    // Resolve alternative group for each question
+    // Resolve selection or alternative group for each question
     const getEffectiveGroup = (qNo: string): string | undefined => {
       const cq = keyQuestionMap.get(qNo);
       if (!cq) return undefined;
+      if (cq.selectionGroup) return cq.selectionGroup.trim();
       if (cq.isAlternative && cq.alternativeGroup) return cq.alternativeGroup.trim();
       if (cq.parentQuestionId && keyQuestionMap.has(cq.parentQuestionId.trim())) {
         const parent = keyQuestionMap.get(cq.parentQuestionId.trim());
+        if (parent.selectionGroup) return parent.selectionGroup.trim();
         if (parent.isAlternative && parent.alternativeGroup) return parent.alternativeGroup.trim();
       }
       const match = qNo.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
       if (match && keyQuestionMap.has(match[1])) {
         const parent = keyQuestionMap.get(match[1]);
+        if (parent.selectionGroup) return parent.selectionGroup.trim();
         if (parent.isAlternative && parent.alternativeGroup) return parent.alternativeGroup.trim();
       }
       return undefined;
     };
 
-    // Pre-calculate distinct question prefixes per alternative group
-    const groupQuestionPrefixes = new Map<string, Set<string>>();
-    for (const cq of canonicalQuestions) {
-      const qKey = getCompleteQuestionIdentifier(cq);
-      const grp = getEffectiveGroup(qKey) || getEffectiveGroup(cq.questionId);
-      if (grp) {
-        if (!groupQuestionPrefixes.has(grp)) {
-          groupQuestionPrefixes.set(grp, new Set());
-        }
-        const prefix = (cq.parentQuestionId || cq.questionId || "").trim();
-        if (prefix) {
-          groupQuestionPrefixes.get(grp)!.add(prefix);
-        }
-      }
-    }
-
-    // Determine branch ID within an alternative group
+    // Determine branch ID within a selection group
     const getBranchId = (qNo: string, grp: string): string => {
-      const prefixes = groupQuestionPrefixes.get(grp);
-      const isMultiQuestionChoice = prefixes && prefixes.size > 1;
-
-      if (isMultiQuestionChoice) {
-        const cq = keyQuestionMap.get(qNo);
-        if (cq?.parentQuestionId && prefixes.has(cq.parentQuestionId.trim())) {
-          return cq.parentQuestionId.trim();
-        }
-        if (prefixes.has(qNo)) {
-          return qNo;
-        }
-        const match = qNo.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
-        if (match && prefixes.has(match[1])) {
-          return match[1];
-        }
+      const cq = keyQuestionMap.get(qNo);
+      if (cq?.branchId && cq.branchId.trim()) {
+        return cq.branchId.trim();
       }
-
-      return qNo;
+      return resolveQuestionBranchId(cq || { questionId: qNo }, cq?.parentQuestionId);
     };
 
-    // Group questions by alternative group and branch
+    // Group questions by selection group and branch
     const groupBranches = new Map<string, Map<string, QuestionFeedback[]>>();
     const groupedQNos = new Set<string>();
 
@@ -526,7 +501,7 @@ export class EvaluationEngine {
     let calculatedTotalScore = 0;
     let calculatedMaxScore = 0;
 
-    // 1. Add compulsory questions (not in any alternative group)
+    // 1. Add compulsory questions (not in any selection / choice group)
     for (const q of questions) {
       const qNo = getQuestionNo(q);
       if (!groupedQNos.has(qNo)) {
@@ -546,12 +521,24 @@ export class EvaluationEngine {
       }
     }
 
-    // 2. Count only ONE alternative per alternative group
+    // 2. Count selection groups ("Attempt any N" and explicit OR choices)
     for (const [grp, branches] of groupBranches.entries()) {
-      let bestBranchAwarded = 0;
-      let bestBranchMax = 0;
-      let bestBranchId = '';
-      const attemptedBranches: string[] = [];
+      const sampleQ = branches.values().next().value?.[0];
+      const qNo = sampleQ ? getQuestionNo(sampleQ) : '';
+      const cq = keyQuestionMap.get(qNo);
+      const reqAttempts = cq?.requiredAttempts || 1;
+      const groupRule = cq?.groupRule || (reqAttempts > 1 ? 'attempt_any_n' : 'mutually_exclusive_or');
+      const explicitGroupMax = cq?.groupMaxMarks;
+
+      interface BranchResult {
+        branchId: string;
+        awarded: number;
+        max: number;
+        isAttempted: boolean;
+        questions: QuestionFeedback[];
+      }
+
+      const branchResults: BranchResult[] = [];
 
       for (const [branchId, branchQuestions] of branches.entries()) {
         const branchAwarded = branchQuestions.reduce(
@@ -562,37 +549,61 @@ export class EvaluationEngine {
           (sum, q) => sum + (typeof q.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0),
           0
         );
+        const isAttempted = branchQuestions.some(
+          (q) => (typeof q.marks === 'number' && q.marks > 0) || (q as any).isAttempted || ((q as any).studentAnswerText && (q as any).studentAnswerText.trim().length > 0)
+        );
 
-        if (branchAwarded > 0) {
-          attemptedBranches.push(branchId);
-        }
-
-        if (branchAwarded > bestBranchAwarded || !bestBranchId) {
-          bestBranchAwarded = branchAwarded;
-          bestBranchId = branchId;
-        }
-        if (branchMax > bestBranchMax) {
-          bestBranchMax = branchMax;
-        }
+        branchResults.push({
+          branchId,
+          awarded: branchAwarded,
+          max: branchMax,
+          isAttempted,
+          questions: branchQuestions,
+        });
       }
 
-      // If student attempted multiple alternative choices in the same group, annotate feedback
-      if (attemptedBranches.length > 1) {
-        for (const [branchId, branchQuestions] of branches.entries()) {
-          const isBest = branchId === bestBranchId;
-          for (const bq of branchQuestions as any[]) {
-            const note = isBest
-              ? `Counted toward final score (best attempt: ${bestBranchAwarded}/${bestBranchMax})`
-              : `Not counted toward final score (alternative ${bestBranchId} scored higher: ${bestBranchAwarded}/${bestBranchMax})`;
-            bq.notes = bq.notes ? `${bq.notes} | ${note}` : note;
-            bq.isFlagged = true;
-            bq.flaggedComment = `Student attempted multiple mutually exclusive OR alternatives (${attemptedBranches.join(', ')}). ${note}`;
+      // Sort branches by awarded marks descending (student's best performance first)
+      branchResults.sort((a, b) => b.awarded - a.awarded);
+
+      const attemptedBranches = branchResults.filter((b) => b.isAttempted);
+      const branchesToCount = attemptedBranches.length > 0 ? attemptedBranches : branchResults;
+
+      // Select top N branches
+      const topNBranches = branchesToCount.slice(0, reqAttempts);
+      const countedBranchIds = new Set(topNBranches.map((b) => b.branchId));
+
+      const groupAwarded = topNBranches.reduce((sum, b) => sum + b.awarded, 0);
+
+      // Group max marks: use explicitGroupMax if provided, else sum of top N max marks
+      const sortedByMax = [...branchResults].sort((a, b) => b.max - a.max);
+      const groupMax = explicitGroupMax !== undefined
+        ? explicitGroupMax
+        : sortedByMax.slice(0, reqAttempts).reduce((sum, b) => sum + b.max, 0);
+
+      // Flag excess attempts if student attempted more branches than permitted
+      if (attemptedBranches.length > reqAttempts) {
+        for (const br of branchResults) {
+          const isCounted = countedBranchIds.has(br.branchId);
+          for (const bq of br.questions as any[]) {
+            if (isCounted) {
+              const note = `Counted toward final score (best attempt: ${br.awarded}/${br.max})`;
+              bq.notes = bq.notes ? `${bq.notes} | ${note}` : note;
+            } else {
+              const note = groupRule === 'mutually_exclusive_or'
+                ? `Not counted toward final score (alternative choice scored higher: ${topNBranches[0]?.awarded}/${topNBranches[0]?.max})`
+                : `Not counted toward final score (exceeded permitted ${reqAttempts} attempts: top ${reqAttempts} attempts counted)`;
+              bq.notes = bq.notes ? `${bq.notes} | ${note}` : note;
+              bq.isFlagged = true;
+              bq.flaggedComment = groupRule === 'mutually_exclusive_or'
+                ? `Student attempted multiple mutually exclusive OR alternatives (${attemptedBranches.map((b) => b.branchId).join(', ')}). ${note}`
+                : `Student attempted ${attemptedBranches.length} choices where only ${reqAttempts} were permitted. Top ${reqAttempts} scoring choices were counted.`;
+            }
           }
         }
       }
 
-      calculatedTotalScore += bestBranchAwarded;
-      calculatedMaxScore += bestBranchMax;
+      calculatedTotalScore += groupAwarded;
+      calculatedMaxScore += groupMax;
     }
 
     // Align paper maximum marks with authoritative canonical total if available

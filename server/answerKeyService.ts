@@ -179,9 +179,11 @@ CRITICAL QUESTION AND MARKS EXTRACTION REQUIREMENTS:
 3. Extract explicit printed maximum marks for the entire question paper (printedMaxMarks, e.g. 80, 100) if stated in the header or instructions.
 4. Extract section-wise maximum marks and section names (e.g. "Section A", "Part I").
 5. Never assume, infer, or invent marks when missing or unclear. Flag uncertain values in flaggedIssue for faculty review.
-6. Distinguish alternative questions (OR choices, e.g. "Answer Q5 OR Q6", "Either 2(a) OR 2(b)"):
-   - Set isAlternative: true
-   - Set alternativeGroup: "Q5_OR_Q6" (or equivalent group identifier).
+6. Distinguish selection rules and alternative questions:
+   - "Attempt any N of the following : marks" instructions (e.g. "Attempt any FIVE of the following : 10"):
+     * Set selectionGroup, requiredAttempts (N), and groupMaxMarks.
+   - Mutually exclusive OR choices (e.g. "Answer Q5 OR Q6", "Either 2(a) OR 2(b)"):
+     * Set isAlternative: true and alternativeGroup: "Q5_OR_Q6" (or equivalent group identifier).
 7. If a parent question (e.g. "Question 2" - 10 marks) has sub-questions (e.g. 2.1 - 4 marks, 2.2 - 6 marks):
    - Set isParentHeader: true on the container question so its marks are not counted twice.
    - Set parentQuestionId: "2" on sub-questions 2.1 and 2.2.
@@ -319,6 +321,11 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         section: q.section ? String(q.section).trim() : undefined,
         isAlternative: Boolean(q.isAlternative),
         alternativeGroup: q.alternativeGroup ? String(q.alternativeGroup).trim() : undefined,
+        selectionGroup: q.selectionGroup ? String(q.selectionGroup).trim() : (q.alternativeGroup ? String(q.alternativeGroup).trim() : undefined),
+        requiredAttempts: typeof q.requiredAttempts === 'number' && Number.isFinite(q.requiredAttempts) ? q.requiredAttempts : undefined,
+        groupRule: q.groupRule as any,
+        groupMaxMarks: typeof q.groupMaxMarks === 'number' && Number.isFinite(q.groupMaxMarks) ? q.groupMaxMarks : undefined,
+        branchId: q.branchId ? String(q.branchId).trim() : undefined,
         isParentHeader,
         questionText: q.questionText ? String(q.questionText).trim() : undefined,
         maxMarks: maxM,
@@ -363,6 +370,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       printedMaxMarks: paperPrintedMax,
       totalMaxMarks: marksValidation.calculatedTotalMarks,
       marksValidation,
+      selectionRules: marksValidation.selectionRules,
       questions: canonicalQuestions,
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
@@ -589,6 +597,11 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
         section: q.section ? String(q.section).trim() : undefined,
         isAlternative: Boolean(q.isAlternative),
         alternativeGroup: q.alternativeGroup ? String(q.alternativeGroup).trim() : undefined,
+        selectionGroup: q.selectionGroup ? String(q.selectionGroup).trim() : (q.alternativeGroup ? String(q.alternativeGroup).trim() : undefined),
+        requiredAttempts: typeof q.requiredAttempts === 'number' && Number.isFinite(q.requiredAttempts) ? q.requiredAttempts : undefined,
+        groupRule: q.groupRule as any,
+        groupMaxMarks: typeof q.groupMaxMarks === 'number' && Number.isFinite(q.groupMaxMarks) ? q.groupMaxMarks : undefined,
+        branchId: q.branchId ? String(q.branchId).trim() : undefined,
         isParentHeader,
         questionText: q.questionText ? String(q.questionText).trim() : undefined,
         maxMarks: maxM,
@@ -633,6 +646,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       printedMaxMarks: paperPrintedMax,
       totalMaxMarks: marksValidation.calculatedTotalMarks,
       marksValidation,
+      selectionRules: marksValidation.selectionRules,
       questions: canonicalQuestions,
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
