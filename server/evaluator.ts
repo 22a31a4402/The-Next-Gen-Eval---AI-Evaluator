@@ -23,6 +23,7 @@ import {
   QuestionFeedback,
   CanonicalAnswerKey,
   StudentExtractedScript,
+  getCompleteQuestionIdentifier,
 } from './types';
 import { config } from './config';
 import { ACTIVE_PRICING_VERSION } from './pricing';
@@ -140,30 +141,46 @@ export class EvaluationEngine {
       // Stage 1 — Extraction: Extract student handwritten/printed script into canonical JSON (or reuse if already completed)
       let extractedScript = job.extractedScript;
       let extractionDuration = 0;
+      const extFingerprint = evaluationCache.generateExtractionFingerprint(payload.sourceDoc, activeCanonicalKey);
 
       if (!extractedScript || !Array.isArray(extractedScript.answers) || extractedScript.answers.length === 0) {
-        job.status = 'preprocessing';
-        job.progressPercent = 30;
-        job.currentStepMessage = 'Stage 1: Extracting student responses, formulas, and diagrams into canonical JSON...';
-        onProgress?.(30, job.currentStepMessage);
+        // Check persistent extraction cache so grading can resume without repeating extraction
+        const cachedExt = evaluationCache.getExtractedScript(extFingerprint);
+        if (cachedExt && Array.isArray(cachedExt.answers) && cachedExt.answers.length > 0) {
+          console.log(
+            `[EvaluationEngine][${correlationId}] Preserving verified Stage 1 extraction from cache (${cachedExt.answers.length} answers). Skipping Stage 1 re-extraction.`
+          );
+          extractedScript = cachedExt;
+          job.extractedScript = cachedExt;
+          job.progressPercent = 45;
+          job.currentStepMessage = 'Preserving verified Stage 1 extraction. Resuming Stage 2 grading...';
+          onProgress?.(45, job.currentStepMessage);
+        } else {
+          job.status = 'preprocessing';
+          job.progressPercent = 30;
+          job.currentStepMessage = 'Stage 1: Extracting student responses, formulas, and diagrams into canonical JSON...';
+          onProgress?.(30, job.currentStepMessage);
 
-        const extStart = Date.now();
-        extractedScript = await studentExtractor.extractStudentAnswers(
-          payload.sourceDoc,
-          activeCanonicalKey,
-          correlationId,
-          {
-            jobId: job.id,
-            institutionId: job.institutionId,
-            fallbackStudentName: job.studentName,
-          }
-        );
-        job.extractedScript = extractedScript;
-        extractionDuration = Date.now() - extStart;
+          const extStart = Date.now();
+          extractedScript = await studentExtractor.extractStudentAnswers(
+            payload.sourceDoc,
+            activeCanonicalKey,
+            correlationId,
+            {
+              jobId: job.id,
+              institutionId: job.institutionId,
+              fallbackStudentName: job.studentName,
+            }
+          );
+          job.extractedScript = extractedScript;
+          extractionDuration = Date.now() - extStart;
+          evaluationCache.saveExtractedScript(extFingerprint, extractedScript);
+        }
       } else {
         console.log(
           `[EvaluationEngine][${correlationId}] Preserving previously completed Stage 1 extraction (${extractedScript.answers.length} answers). Skipping Stage 1 re-extraction.`
         );
+        evaluationCache.saveExtractedScript(extFingerprint, extractedScript);
         job.progressPercent = 45;
         job.currentStepMessage = 'Preserving verified Stage 1 extraction. Resuming Stage 2 grading...';
         onProgress?.(45, job.currentStepMessage);
@@ -271,7 +288,7 @@ export class EvaluationEngine {
     const valStart = Date.now();
     let validatedReport: EvaluationReport;
     try {
-      validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName);
+      validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName, activeCanonicalKey);
     } catch (valErr: any) {
       // If the discrepancy is purely an aggregate totalScore or maxScore arithmetic addition error from an LLM fallback,
       // but all individual question marks, bounds, and criteria are valid, reconcile with deterministic backend calculation!
@@ -286,20 +303,23 @@ export class EvaluationEngine {
         geminiResult.report.questions.length > 0
       ) {
         console.warn(
-          `[EvaluationEngine][${correlationId}] Reconciling model aggregate totalScore with exact deterministic mathematical sum.`
+          `[EvaluationEngine][${correlationId}] Reconciling model aggregate totalScore with exact deterministic mathematical calculation.`
         );
         const fixedReport = { ...geminiResult.report };
-        const exactTotal = fixedReport.questions.reduce(
-          (sum: number, q: any) => sum + (typeof q?.marks === 'number' && Number.isFinite(q.marks) ? q.marks : 0),
-          0
+        const reconciledScores = this.calculateStudentFinalMarks(
+          fixedReport.questions.map((q: any) => ({
+            qNo: String(q?.qNo ?? '').trim(),
+            marks: typeof q?.marks === 'number' && Number.isFinite(q.marks) ? q.marks : 0,
+            maxMarks: typeof q?.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0,
+            feedbackPoints: Array.isArray(q?.feedbackPoints) ? q.feedbackPoints : ['Evaluated.'],
+            isCorrect: Number(q?.marks) >= Number(q?.maxMarks),
+          })),
+          activeCanonicalKey,
+          mode
         );
-        const exactMax = fixedReport.questions.reduce(
-          (sum: number, q: any) => sum + (typeof q?.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0),
-          0
-        );
-        fixedReport.totalScore = parseFloat(exactTotal.toFixed(2));
-        fixedReport.maxScore = parseFloat(exactMax.toFixed(2));
-        validatedReport = this.validateAndNormalizeReport(fixedReport, mode, job.studentName);
+        fixedReport.totalScore = reconciledScores.totalScore;
+        fixedReport.maxScore = reconciledScores.maxScore;
+        validatedReport = this.validateAndNormalizeReport(fixedReport, mode, job.studentName, activeCanonicalKey);
       } else {
         job.status = 'needs_review';
         job.draftReport = geminiResult.report; // Preserve unvalidated draft for authorized instructor/admin review
@@ -363,10 +383,201 @@ export class EvaluationEngine {
    * NEVER replaces missing or invalid maxMarks with 1.
    * Throws ValidationError on any inconsistency.
    */
+  /**
+   * Deterministically calculates student totalScore and maxScore:
+   * - Mutually exclusive OR alternatives contribute only the highest awarded alternative to totalScore,
+   *   and only one alternative to maxScore.
+   * - Keeps all alternatives evaluated and visible.
+   * - Flags multiple attempted alternatives for faculty review.
+   * - Handles nested choices and parent headers without double-counting.
+   */
+  public calculateStudentFinalMarks(
+    questions: QuestionFeedback[],
+    canonicalKey?: CanonicalAnswerKey,
+    mode?: EvaluationMode
+  ): { totalScore: number; maxScore: number } {
+    if (!canonicalKey || !Array.isArray(canonicalKey.questions) || canonicalKey.questions.length === 0) {
+      let total = 0;
+      let max = 0;
+      for (const q of questions) {
+        total += typeof q.marks === 'number' && Number.isFinite(q.marks) ? q.marks : 0;
+        max += typeof q.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0;
+      }
+      return {
+        totalScore: parseFloat(total.toFixed(2)),
+        maxScore: parseFloat(max.toFixed(2)),
+      };
+    }
+
+    const keyQuestionMap = new Map<string, any>();
+    for (const cq of canonicalKey.questions) {
+      const qKey = getCompleteQuestionIdentifier(cq);
+      if (qKey) {
+        keyQuestionMap.set(qKey, cq);
+      }
+      if (cq.questionId) {
+        keyQuestionMap.set(cq.questionId.trim(), cq);
+      }
+    }
+
+    const getQuestionNo = (q: any): string => String(q.qNo || q.questionId || '').trim();
+
+    // Resolve alternative group for each question
+    const getEffectiveGroup = (qNo: string): string | undefined => {
+      const cq = keyQuestionMap.get(qNo);
+      if (!cq) return undefined;
+      if (cq.isAlternative && cq.alternativeGroup) return cq.alternativeGroup.trim();
+      if (cq.parentQuestionId && keyQuestionMap.has(cq.parentQuestionId.trim())) {
+        const parent = keyQuestionMap.get(cq.parentQuestionId.trim());
+        if (parent.isAlternative && parent.alternativeGroup) return parent.alternativeGroup.trim();
+      }
+      const match = qNo.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
+      if (match && keyQuestionMap.has(match[1])) {
+        const parent = keyQuestionMap.get(match[1]);
+        if (parent.isAlternative && parent.alternativeGroup) return parent.alternativeGroup.trim();
+      }
+      return undefined;
+    };
+
+    // Pre-calculate distinct question prefixes per alternative group
+    const groupQuestionPrefixes = new Map<string, Set<string>>();
+    for (const cq of canonicalKey.questions) {
+      const qKey = getCompleteQuestionIdentifier(cq);
+      const grp = getEffectiveGroup(qKey) || getEffectiveGroup(cq.questionId);
+      if (grp) {
+        if (!groupQuestionPrefixes.has(grp)) {
+          groupQuestionPrefixes.set(grp, new Set());
+        }
+        const prefix = (cq.parentQuestionId || cq.questionId || "").trim();
+        if (prefix) {
+          groupQuestionPrefixes.get(grp)!.add(prefix);
+        }
+      }
+    }
+
+    // Determine branch ID within an alternative group
+    const getBranchId = (qNo: string, grp: string): string => {
+      const prefixes = groupQuestionPrefixes.get(grp);
+      const isMultiQuestionChoice = prefixes && prefixes.size > 1;
+
+      if (isMultiQuestionChoice) {
+        const cq = keyQuestionMap.get(qNo);
+        if (cq?.parentQuestionId && prefixes.has(cq.parentQuestionId.trim())) {
+          return cq.parentQuestionId.trim();
+        }
+        if (prefixes.has(qNo)) {
+          return qNo;
+        }
+        const match = qNo.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
+        if (match && prefixes.has(match[1])) {
+          return match[1];
+        }
+      }
+
+      return qNo;
+    };
+
+    // Group questions by alternative group and branch
+    const groupBranches = new Map<string, Map<string, QuestionFeedback[]>>();
+    const groupedQNos = new Set<string>();
+
+    for (const q of questions) {
+      const qNo = getQuestionNo(q);
+      const grp = getEffectiveGroup(qNo);
+      if (grp) {
+        groupedQNos.add(qNo);
+        if (!groupBranches.has(grp)) {
+          groupBranches.set(grp, new Map<string, QuestionFeedback[]>());
+        }
+        const branches = groupBranches.get(grp)!;
+        const branchId = getBranchId(qNo, grp);
+        if (!branches.has(branchId)) {
+          branches.set(branchId, []);
+        }
+        branches.get(branchId)!.push(q);
+      }
+    }
+
+    let calculatedTotalScore = 0;
+    let calculatedMaxScore = 0;
+
+    // 1. Add compulsory questions (not in any alternative group)
+    for (const q of questions) {
+      const qNo = getQuestionNo(q);
+      if (!groupedQNos.has(qNo)) {
+        calculatedTotalScore += typeof q.marks === 'number' && Number.isFinite(q.marks) ? q.marks : 0;
+        calculatedMaxScore += typeof q.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0;
+      }
+    }
+
+    // 2. Count only ONE alternative per alternative group
+    for (const [grp, branches] of groupBranches.entries()) {
+      let bestBranchAwarded = 0;
+      let bestBranchMax = 0;
+      let bestBranchId = '';
+      const attemptedBranches: string[] = [];
+
+      for (const [branchId, branchQuestions] of branches.entries()) {
+        const branchAwarded = branchQuestions.reduce(
+          (sum, q) => sum + (typeof q.marks === 'number' && Number.isFinite(q.marks) ? q.marks : 0),
+          0
+        );
+        const branchMax = branchQuestions.reduce(
+          (sum, q) => sum + (typeof q.maxMarks === 'number' && Number.isFinite(q.maxMarks) ? q.maxMarks : 0),
+          0
+        );
+
+        if (branchAwarded > 0) {
+          attemptedBranches.push(branchId);
+        }
+
+        if (branchAwarded > bestBranchAwarded || !bestBranchId) {
+          bestBranchAwarded = branchAwarded;
+          bestBranchId = branchId;
+        }
+        if (branchMax > bestBranchMax) {
+          bestBranchMax = branchMax;
+        }
+      }
+
+      // If student attempted multiple alternative choices in the same group, annotate feedback
+      if (attemptedBranches.length > 1) {
+        for (const [branchId, branchQuestions] of branches.entries()) {
+          const isBest = branchId === bestBranchId;
+          for (const bq of branchQuestions as any[]) {
+            const note = isBest
+              ? `Counted toward final score (best attempt: ${bestBranchAwarded}/${bestBranchMax})`
+              : `Not counted toward final score (alternative ${bestBranchId} scored higher: ${bestBranchAwarded}/${bestBranchMax})`;
+            bq.notes = bq.notes ? `${bq.notes} | ${note}` : note;
+            bq.isFlagged = true;
+            bq.flaggedComment = `Student attempted multiple mutually exclusive OR alternatives (${attemptedBranches.join(', ')}). ${note}`;
+          }
+        }
+      }
+
+      calculatedTotalScore += bestBranchAwarded;
+      calculatedMaxScore += bestBranchMax;
+    }
+
+    return {
+      totalScore: parseFloat(calculatedTotalScore.toFixed(2)),
+      maxScore: parseFloat(calculatedMaxScore.toFixed(2)),
+    };
+  }
+
+  /**
+   * Strictly validates question score bounds, duplicate IDs, NaN/infinite values,
+   * and mathematical aggregate sum consistency.
+   *
+   * NEVER clamps scores to make outputs appear valid.
+   * NEVER replaces missing or invalid maxMarks with 1.
+   * Throws ValidationError on any inconsistency.
+   */
   public validateAndNormalizeReport(
     report: any,
     mode: EvaluationMode,
-    fallbackStudentName: string
+    fallbackStudentName: string,
+    canonicalKey?: CanonicalAnswerKey
   ): EvaluationReport {
     if (!report || typeof report !== 'object') {
       throw new ValidationError('Malformed response: Expected a structured JSON object.');
@@ -382,8 +593,6 @@ export class EvaluationEngine {
     }
 
     const seenQNos = new Set<string>();
-    let calculatedTotalScore = 0;
-    let calculatedMaxScore = 0;
 
     const validatedQuestions: QuestionFeedback[] = [];
 
@@ -449,9 +658,6 @@ export class EvaluationEngine {
         flaggedComment = undefined;
       }
 
-      calculatedTotalScore += marks;
-      calculatedMaxScore += maxMarks;
-
       validatedQuestions.push({
         qNo,
         marks,
@@ -463,9 +669,10 @@ export class EvaluationEngine {
       });
     }
 
-    // 7. Aggregate Totals Verification
-    const roundedTotalScore = parseFloat(calculatedTotalScore.toFixed(2));
-    const roundedMaxScore = parseFloat(calculatedMaxScore.toFixed(2));
+    // 7. Aggregate Totals Verification with OR-alternative grouping
+    const finalScores = this.calculateStudentFinalMarks(validatedQuestions, canonicalKey, mode);
+    const roundedTotalScore = finalScores.totalScore;
+    const roundedMaxScore = finalScores.maxScore;
 
     // Verify model-reported totalScore against exact calculated sum
     if (typeof report.totalScore === 'number' && Number.isFinite(report.totalScore)) {

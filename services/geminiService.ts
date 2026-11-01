@@ -197,8 +197,8 @@ export const generateStructuredFeedback = async (
 
     let lastActiveTimestamp = Date.now();
     const pollingStart = Date.now();
-    const MAX_ACTIVE_PROCESSING_LIMIT_MS = 300000; // 5 minutes max total execution time
-    const MAX_IDLE_TIMEOUT_MS = 90000; // 90 seconds without successful server response
+    const MAX_ACTIVE_PROCESSING_LIMIT_MS = 600000; // 10 minutes max total execution time for large evaluations
+    const MAX_IDLE_TIMEOUT_MS = 120000; // 120 seconds without successful server response
 
     const cleanup = () => {
       if (sseSource) {
@@ -225,6 +225,7 @@ export const generateStructuredFeedback = async (
     const settleFailure = (err: Error) => {
       if (isSettled) return;
       isSettled = true;
+      // Note: Frontend polling disconnect or timeout does NOT cancel backend processing
       cleanup();
       reject(err);
     };
@@ -292,9 +293,9 @@ export const generateStructuredFeedback = async (
       if (isSettled) return;
       const now = Date.now();
       if (now - lastActiveTimestamp > MAX_IDLE_TIMEOUT_MS) {
-        settleFailure(new Error(`Evaluation timed out: Backend server did not respond for ${Math.round(MAX_IDLE_TIMEOUT_MS / 1000)} seconds.`));
+        settleFailure(new Error(`Evaluation polling timed out: Backend server did not respond for ${Math.round(MAX_IDLE_TIMEOUT_MS / 1000)} seconds. Processing continues on the server.`));
       } else if (now - pollingStart > MAX_ACTIVE_PROCESSING_LIMIT_MS) {
-        settleFailure(new Error(`Evaluation timed out: Total processing time exceeded ${Math.round(MAX_ACTIVE_PROCESSING_LIMIT_MS / 1000)} seconds.`));
+        settleFailure(new Error(`Evaluation client limit reached (${Math.round(MAX_ACTIVE_PROCESSING_LIMIT_MS / 1000)}s): Evaluation is processing in the background on the server.`));
       }
     }, 2000);
   });

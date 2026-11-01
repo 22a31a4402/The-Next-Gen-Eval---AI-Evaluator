@@ -380,6 +380,15 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
             </span>
           </div>
         )}
+        {marksValidation.hasAmbiguousChoices && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center gap-2 text-xs text-amber-800 font-medium">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+            <span>
+              <strong>OR-Choice Review:</strong> {marksValidation.ambiguousChoices[0]}
+              {marksValidation.ambiguousChoices.length > 1 && ` (+${marksValidation.ambiguousChoices.length - 1} more choices flagged)`}
+            </span>
+          </div>
+        )}
 
         {/* Workspace Body: Split View */}
         <div className="flex-1 flex overflow-hidden">
@@ -524,6 +533,33 @@ export const AnswerKeyReviewModal: React.FC<AnswerKeyReviewModalProps> = ({
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
+                      </div>
+
+                      {/* Alternative / OR Choice Configuration */}
+                      <div className="mb-4 p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center gap-4 text-xs">
+                        <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(q.isAlternative)}
+                            onChange={(e) => handleQuestionChange(actualIndex, 'isAlternative', e.target.checked)}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>OR Alternative Choice</span>
+                        </label>
+                        {q.isAlternative && (
+                          <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 shrink-0">
+                              Choice Group ID:
+                            </span>
+                            <input
+                              type="text"
+                              value={q.alternativeGroup || ''}
+                              onChange={(e) => handleQuestionChange(actualIndex, 'alternativeGroup', e.target.value)}
+                              placeholder="e.g. Q2_OR or SecB_Choice1"
+                              className="flex-1 text-xs font-semibold px-2.5 py-1 bg-white rounded-lg border border-slate-200 focus:outline-none focus:border-blue-500"
+                            />
+                          </div>
+                        )}
                       </div>
 
                       {/* Question Text */}

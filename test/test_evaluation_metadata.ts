@@ -278,6 +278,7 @@ async function runMetadataTests() {
       id: jobId2,
       correlationId: `meta_corr_2_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_2_${Date.now()}`, startTime: Date.now() },
+      extractedScript: undefined,
       inputPayload: {
         sourceDoc: { name: 'student_script_2_retry.pdf', text: `Unique text for retry test ${Date.now()}: Q1 Relations of thyroid.` },
         canonicalAnswerKey: anatomyCanonicalKey,
@@ -346,6 +347,7 @@ async function runMetadataTests() {
       id: jobId3,
       correlationId: `meta_corr_3_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_3_${Date.now()}`, startTime: Date.now() },
+      extractedScript: undefined,
       inputPayload: {
         sourceDoc: { name: 'student_script_3_fail.pdf', text: `Unique text for failed test ${Date.now()}: Q1 Relations of thyroid.` },
         canonicalAnswerKey: anatomyCanonicalKey,
@@ -410,6 +412,7 @@ async function runMetadataTests() {
       id: jobId4,
       correlationId: `meta_corr_4_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_4_${Date.now()}`, startTime: Date.now() },
+      extractedScript: undefined,
       inputPayload: {
         sourceDoc: { name: 'student_script_4_missing.pdf', text: `Unique text missing metadata ${Date.now()}: Q1 Relations of thyroid.` },
         canonicalAnswerKey: anatomyCanonicalKey,
@@ -472,6 +475,7 @@ async function runMetadataTests() {
       id: jobId5,
       correlationId: `meta_corr_5_${Date.now()}`,
       canonicalAnswerKey: undefined, // Single-stage mode
+      extractedScript: undefined,
       metrics: { ...job1.metrics, correlationId: `meta_corr_5_${Date.now()}`, startTime: Date.now() },
       inputPayload: {
         sourceDoc: { name: 'student_script_5_single.pdf', text: `Run 5 ${Date.now()}: Single stage test.` },

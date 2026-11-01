@@ -294,6 +294,21 @@ export const isDailyQuotaExhaustion = (error: any): boolean => {
 };
 
 /**
+ * Detects whether an error represents a 429 rate limit or quota exhaustion condition
+ */
+export const is429OrQuotaError = (error: any): boolean => {
+  const status = error?.status || error?.code || error?.statusCode;
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    status === 429 ||
+    msg.includes('429') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('quota') ||
+    msg.includes('rate limit')
+  );
+};
+
+/**
  * Detects whether an error represents a 503 high demand / service overloaded condition
  */
 export const is503Error = (error: any): boolean => {
@@ -426,7 +441,7 @@ export const callGeminiWithFallback = async (
   let totalRetries = 0;
   let fallbackCallsCount = 0;
   const overallStart = Date.now();
-  const overallTimeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : config.requestTimeoutMs;
+  const overallTimeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : Math.max(config.requestTimeoutMs, 180000);
   const overallDeadline = overallStart + overallTimeoutMs;
 
   for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
@@ -721,17 +736,26 @@ export const callGeminiWithFallback = async (
           err?.message || err
         );
 
-        const isQuota429 = isDailyQuotaExhaustion(err);
+        const isDailyQuota = isDailyQuotaExhaustion(err);
+        const is429 = is429OrQuotaError(err);
         const is503Condition = is503Error(err);
 
-        if (isQuota429) {
-          // Immediately mark model in quota exhaustion cooldown so subsequent calls skip it immediately
+        if (isDailyQuota) {
+          // Immediately mark model in quota cooldown and skip model without retrying
           markModelQuotaExhausted(modelName, String(err?.message || err), 3600000);
-          break; // Never retry daily quota exhaustion
+          break; // Skip daily quota 429 models immediately and advance to next fallback model
+        }
+
+        if (is429) {
+          // For transient 429, allow at most 1 bounded retry; if it persists, mark in cooldown and advance to next model
+          if (attempt >= 1) {
+            markModelQuotaExhausted(modelName, String(err?.message || err), 300000);
+            break;
+          }
         }
 
         if (is503Condition) {
-          // For 503, allow at most 1 retry with short backoff, then mark temporarily unavailable and advance to next model
+          // For 503, allow bounded 1 retry with short backoff, then mark temporarily unavailable and advance to next model
           if (attempt >= 1) {
             markModelUnavailable(modelName, String(err?.message || err), 60000);
             break;

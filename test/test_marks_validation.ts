@@ -21,6 +21,9 @@ import {
 } from '../server/types';
 import { answerKeyService, AnswerKeyValidationError } from '../server/answerKeyService';
 import { UserContext } from '../server/auth';
+import { evaluationEngine } from '../server/evaluator';
+import { evaluationCache } from '../server/cache';
+import { QuestionFeedback, StudentExtractedScript } from '../server/types';
 
 const facultyUser: UserContext = {
   userId: 'faculty_prof_sharma',
@@ -498,4 +501,391 @@ console.log('\nTest 6: Manual Faculty Correction & Successful Approval');
   console.log('  ✓ Manual faculty edit resolved discrepancy from 90 to 80; approval succeeded with status "approved".');
 }
 
+// -----------------------------------------------------------------------------
+// TEST 7: Nested Multi-part Choices: Q2 (2.a + 2.b) OR Q3 (3.a + 3.b)
+// -----------------------------------------------------------------------------
+console.log('\nTest 7: Nested Multi-part Choices: Q2 [2.a + 2.b] OR Q3 [3.a + 3.b]');
+{
+  const questions: CanonicalQuestionKey[] = [
+    {
+      questionId: '1',
+      section: 'Section A',
+      questionText: 'Compulsory Q1',
+      maxMarks: 40,
+      referenceAnswer: 'Model answer 1',
+      expectedConcepts: ['C1'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Full credit'],
+    },
+    // Branch 1: Q2 with subquestions 2.a (10m) + 2.b (10m) = 20m
+    {
+      questionId: '2',
+      subquestionId: 'a',
+      section: 'Section B',
+      isAlternative: true,
+      alternativeGroup: 'Q2_OR_Q3',
+      questionText: 'Option 1 Part A: Anatomy of median nerve',
+      maxMarks: 10,
+      referenceAnswer: 'Median nerve origin and course',
+      expectedConcepts: ['C5-T1'],
+      acceptableAlternatives: [],
+      markingCriteria: ['5 for origin, 5 for course'],
+    },
+    {
+      questionId: '2',
+      subquestionId: 'b',
+      section: 'Section B',
+      isAlternative: true,
+      alternativeGroup: 'Q2_OR_Q3',
+      questionText: 'Option 1 Part B: Carpal tunnel syndrome',
+      maxMarks: 10,
+      referenceAnswer: 'Clinical features and tests',
+      expectedConcepts: ['Phalen test', 'Tinel sign'],
+      acceptableAlternatives: [],
+      markingCriteria: ['5 for signs, 5 for management'],
+    },
+    // Branch 2: Q3 with subquestions 3.a (10m) + 3.b (10m) = 20m
+    {
+      questionId: '3',
+      subquestionId: 'a',
+      section: 'Section B',
+      isAlternative: true,
+      alternativeGroup: 'Q2_OR_Q3',
+      questionText: 'Option 2 Part A: Ulnar nerve anatomy',
+      maxMarks: 10,
+      referenceAnswer: 'Ulnar nerve origin and relations',
+      expectedConcepts: ['C8-T1', 'Medial epicondyle'],
+      acceptableAlternatives: [],
+      markingCriteria: ['5 for origin, 5 for course'],
+    },
+    {
+      questionId: '3',
+      subquestionId: 'b',
+      section: 'Section B',
+      isAlternative: true,
+      alternativeGroup: 'Q2_OR_Q3',
+      questionText: 'Option 2 Part B: Claw hand deformity',
+      maxMarks: 10,
+      referenceAnswer: 'Mechanism and clinical presentation',
+      expectedConcepts: ['Lumbricals', 'Interossei'],
+      acceptableAlternatives: [],
+      markingCriteria: ['5 for mechanism, 5 for treatment'],
+    },
+  ];
+
+  const result = calculateCanonicalKeyMarks(questions, 60);
+
+  assert.strictEqual(result.calculatedTotalMarks, 60, 'Calculated total should count only one alternative branch (40 + 20 = 60)');
+  assert.strictEqual(result.hasDiscrepancy, false, 'No discrepancy against 60 printed max marks');
+  assert.strictEqual(result.sectionTotals['Section A'], 40);
+  assert.strictEqual(result.sectionTotals['Section B'], 20);
+  console.log('  ✓ Multi-part choices (2.a+2.b vs 3.a+3.b) grouped correctly without double counting.');
+}
+
+// -----------------------------------------------------------------------------
+// TEST 8: Subquestion-level OR Choice & Parent Header Non-Double-Counting
+// -----------------------------------------------------------------------------
+console.log('\nTest 8: Subquestion-level Choice with Parent Header Non-Double-Counting');
+{
+  const questions: CanonicalQuestionKey[] = [
+    {
+      questionId: '1',
+      section: 'Section A',
+      questionText: 'Compulsory Q1',
+      maxMarks: 50,
+      referenceAnswer: 'Model answer',
+      expectedConcepts: ['C1'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Criteria'],
+    },
+    // Parent header question with marks (e.g. 10m) whose children carry marks
+    {
+      questionId: '2',
+      section: 'Section B',
+      questionText: 'Question 2: Answer either part a OR part b',
+      maxMarks: 10,
+      referenceAnswer: 'See subparts',
+      expectedConcepts: ['Subparts'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Refer to parts'],
+    },
+    // Subquestion 2.a (10m) OR Subquestion 2.b (10m)
+    {
+      questionId: '2',
+      subquestionId: 'a',
+      section: 'Section B',
+      isAlternative: true,
+      alternativeGroup: 'Q2_SUB_OR',
+      questionText: 'Subquestion 2.a: Femoral sheath anatomy',
+      maxMarks: 10,
+      referenceAnswer: 'Femoral sheath compartments',
+      expectedConcepts: ['Femoral canal', 'Femoral artery', 'Femoral vein'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Full credit'],
+    },
+    {
+      questionId: '2',
+      subquestionId: 'b',
+      section: 'Section B',
+      isAlternative: true,
+      alternativeGroup: 'Q2_SUB_OR',
+      questionText: 'Subquestion 2.b: Inguinal canal boundaries',
+      maxMarks: 10,
+      referenceAnswer: 'Inguinal canal walls and rings',
+      expectedConcepts: ['External oblique', 'Conjoint tendon'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Full credit'],
+    },
+  ];
+
+  const result = calculateCanonicalKeyMarks(questions, 60);
+
+  // Total should be: 50 (Q1) + 10 (one alternative branch of Q2.a / Q2.b) = 60
+  // Parent header Q2 (10m) should NOT be counted again!
+  assert.strictEqual(result.calculatedTotalMarks, 60, 'Parent header marks must not be double counted with subquestions');
+  assert.strictEqual(result.hasDiscrepancy, false, 'Should match 60 printed max marks');
+  console.log('  ✓ Parent header marks excluded when subquestions have marks; subquestion OR counted once.');
+}
+
+// -----------------------------------------------------------------------------
+// TEST 9: Ambiguous Choices Flagging for Faculty Review
+// -----------------------------------------------------------------------------
+console.log('\nTest 9: Ambiguous Choice Flagging for Faculty Review');
+{
+  // Subtest A: Solitary alternative branch (Q2 isAlternative = true without second branch)
+  const solitaryQuestions: CanonicalQuestionKey[] = [
+    {
+      questionId: '1',
+      maxMarks: 20,
+      referenceAnswer: 'Ans 1',
+      expectedConcepts: ['C1'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Crit 1'],
+    },
+    {
+      questionId: '2',
+      isAlternative: true,
+      alternativeGroup: 'Q2_SOLITARY',
+      maxMarks: 20,
+      referenceAnswer: 'Ans 2',
+      expectedConcepts: ['C2'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Crit 2'],
+    },
+  ];
+
+  const solitaryResult = calculateCanonicalKeyMarks(solitaryQuestions);
+  assert.strictEqual(solitaryResult.hasAmbiguousChoices, true, 'Solitary alternative must be flagged');
+  assert.ok(solitaryResult.ambiguousChoices.some((m) => m.includes('only one choice branch') || m.includes('only 1')), 'Warning message for solitary branch');
+
+  // Subtest B: Unequal marks across branches (Branch 1 is 10m, Branch 2 is 15m)
+  const unequalQuestions: CanonicalQuestionKey[] = [
+    {
+      questionId: '1',
+      isAlternative: true,
+      alternativeGroup: 'Q1_OR_Q2',
+      maxMarks: 10,
+      referenceAnswer: 'Ans 1',
+      expectedConcepts: ['C1'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Crit 1'],
+    },
+    {
+      questionId: '2',
+      isAlternative: true,
+      alternativeGroup: 'Q1_OR_Q2',
+      maxMarks: 15,
+      referenceAnswer: 'Ans 2',
+      expectedConcepts: ['C2'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Crit 2'],
+    },
+  ];
+
+  const unequalResult = calculateCanonicalKeyMarks(unequalQuestions);
+  assert.strictEqual(unequalResult.hasAmbiguousChoices, true, 'Unequal marks between alternative branches must be flagged');
+  assert.ok(unequalResult.ambiguousChoices.some((m) => m.includes('unequal')), 'Warning message for unequal marks');
+
+  // Subtest C: Unconfigured "OR" choice in prompt without alternativeGroup
+  const promptOrQuestions: CanonicalQuestionKey[] = [
+    {
+      questionId: '1',
+      maxMarks: 10,
+      referenceAnswer: 'Ans 1',
+      expectedConcepts: ['C1'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Crit 1'],
+    },
+    {
+      questionId: '2',
+      questionText: 'Describe the brachial plexus OR lumbosacral plexus.',
+      maxMarks: 10,
+      referenceAnswer: 'Ans 2',
+      expectedConcepts: ['C2'],
+      acceptableAlternatives: [],
+      markingCriteria: ['Crit 2'],
+    },
+  ];
+
+  const promptOrResult = calculateCanonicalKeyMarks(promptOrQuestions);
+  assert.strictEqual(promptOrResult.hasAmbiguousChoices, true, 'Question with choice keyword in text must be flagged');
+  assert.ok(promptOrResult.ambiguousChoices.some((m) => m.includes('suggests an alternative choice') || m.includes('OR')), 'Warning message for unconfigured OR keyword');
+
+  console.log('  ✓ Ambiguous choices correctly detected and flagged for faculty review across all cases.');
+}
+
+// -----------------------------------------------------------------------------
+// TEST 10: Student Evaluation Scoring with Mutually Exclusive Alternatives
+// -----------------------------------------------------------------------------
+console.log('\nTest 10: Student Evaluation Scoring with Mutually Exclusive Alternatives');
+{
+  const canonicalKey: CanonicalAnswerKey = {
+    id: 'key_test_eval_or',
+    examId: 'exam_or_1',
+    sourceMode: 'ai_generated',
+    version: 1,
+    title: 'Anatomy Midterm',
+    status: 'approved',
+    printedMaxMarks: 60,
+    totalMaxMarks: 60,
+    questions: [
+      {
+        questionId: '1',
+        maxMarks: 40,
+        referenceAnswer: 'Ref 1',
+        expectedConcepts: ['C1'],
+        acceptableAlternatives: [],
+        markingCriteria: ['Crit 1'],
+      },
+      {
+        questionId: '2',
+        isAlternative: true,
+        alternativeGroup: 'Q2_OR_Q3',
+        maxMarks: 20,
+        referenceAnswer: 'Ref 2',
+        expectedConcepts: ['C2'],
+        acceptableAlternatives: [],
+        markingCriteria: ['Crit 2'],
+      },
+      {
+        questionId: '3',
+        isAlternative: true,
+        alternativeGroup: 'Q2_OR_Q3',
+        maxMarks: 20,
+        referenceAnswer: 'Ref 3',
+        expectedConcepts: ['C3'],
+        acceptableAlternatives: [],
+        markingCriteria: ['Crit 3'],
+      },
+    ],
+    metadata: {
+      institutionId: facultyUser.institutionId,
+      createdBy: facultyUser.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+
+  // Student answered Q1 (scored 35/40), and attempted BOTH Q2 (scored 18/20) and Q3 (scored 14/20)
+  const feedbackList: QuestionFeedback[] = [
+    {
+      qNo: '1',
+      questionId: '1',
+      marks: 35,
+      maxMarks: 40,
+      isCorrect: true,
+      feedbackPoints: ['Good work'],
+    },
+    {
+      qNo: '2',
+      questionId: '2',
+      marks: 18,
+      maxMarks: 20,
+      isCorrect: true,
+      feedbackPoints: ['Very good solution'],
+    },
+    {
+      qNo: '3',
+      questionId: '3',
+      marks: 14,
+      maxMarks: 20,
+      isCorrect: true,
+      feedbackPoints: ['Adequate solution'],
+    },
+  ];
+
+  const calculated = evaluationEngine.calculateStudentFinalMarks(feedbackList, canonicalKey, 'without-manual');
+
+  // Total score should be 35 + max(18, 14) = 53
+  assert.strictEqual(calculated.totalScore, 53, 'Total score should count only the best alternative branch');
+  assert.strictEqual(calculated.maxScore, 60, 'Max score should count only one alternative (40 + 20 = 60)');
+
+  // Verify multiple attempted alternatives flagged on the questions
+  const q2Feedback = feedbackList.find((f) => f.questionId === '2');
+  const q3Feedback = feedbackList.find((f) => f.questionId === '3');
+  assert.ok(q2Feedback?.notes?.includes('Counted toward final score (best attempt: 18/20)'), 'Q2 noted as counted best attempt');
+  assert.ok(q3Feedback?.notes?.includes('Not counted toward final score') && q3Feedback?.notes?.includes('scored higher: 18/20'), 'Q3 noted as not counted');
+
+  console.log('  ✓ Evaluator correctly counted best alternative (53/60) and retained full feedback on both attempts.');
+}
+
+// -----------------------------------------------------------------------------
+// TEST 11: Stage 1 Student Extraction Caching & Resumption
+// -----------------------------------------------------------------------------
+console.log('\nTest 11: Stage 1 Student Extraction Caching & Resumption');
+{
+  const mockDoc = {
+    name: 'Student_Exam_Paper.pdf',
+    type: 'application/pdf',
+    base64: 'JVBERi0xLjQKJcTl8uXr...',
+  };
+
+  const canonicalKey: CanonicalAnswerKey = {
+    id: 'key_resumption_test',
+    examId: 'exam_resump_1',
+    sourceMode: 'ai_generated',
+    version: 1,
+    title: 'Physiology Paper',
+    status: 'approved',
+    totalMaxMarks: 100,
+    questions: [],
+    metadata: {
+      institutionId: facultyUser.institutionId,
+      createdBy: facultyUser.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  };
+
+  const fingerprint = evaluationCache.generateExtractionFingerprint(mockDoc, canonicalKey);
+  assert.ok(fingerprint.length >= 16, 'Fingerprint must be a valid hash');
+
+  const mockExtractedScript: StudentExtractedScript = {
+    studentName: 'Aarav Patel',
+    answers: [
+      {
+        questionId: '1',
+        studentAnswerText: 'Cardiac cycle consists of systole and diastole...',
+        confidence: 0.95,
+        isAttempted: true,
+      },
+    ],
+    visualEvidenceRetained: true,
+    extractedAt: Date.now(),
+  };
+
+  // Save to persistent extraction cache
+  evaluationCache.saveExtractedScript(fingerprint, mockExtractedScript);
+
+  // Retrieve from cache
+  const cached = evaluationCache.getExtractedScript(fingerprint);
+  assert.ok(cached !== null, 'Extracted script should be retrieved from cache');
+  assert.strictEqual(cached?.studentName, 'Aarav Patel', 'Cached student name should match');
+  assert.strictEqual(cached?.answers.length, 1, 'Cached answers array should match');
+  assert.strictEqual(cached?.visualEvidenceRetained, true);
+
+  console.log('  ✓ Stage 1 extracted script cached and restored with full fidelity; grading can resume without re-extraction.');
+}
+
 console.log('\n=== ALL MARKS VALIDATION REGRESSION TESTS PASSED SUCCESSFULLY ===');
+

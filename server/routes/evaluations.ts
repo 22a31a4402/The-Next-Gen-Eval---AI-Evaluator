@@ -15,6 +15,7 @@ import { EvaluationJob, EvaluationMode, CanonicalAnswerKey } from '../types';
 import { requireAuth, requireRole, verifyJobAccess, UserContext, checkEvaluationRateLimit } from '../auth';
 import { usageLedger } from '../usageLedger';
 import { answerKeyService } from '../answerKeyService';
+import { config } from '../config';
 
 export const evaluationsRouter = Router();
 
@@ -654,7 +655,7 @@ evaluationsRouter.post('/sync', async (req: Request, res: Response): Promise<voi
       user
     );
 
-    const timeoutMs = 95000;
+    const timeoutMs = Math.max(config.requestTimeoutMs * 2, 360000);
     const startTime = Date.now();
 
     const waitForJob = new Promise<EvaluationJob>((resolve, reject) => {

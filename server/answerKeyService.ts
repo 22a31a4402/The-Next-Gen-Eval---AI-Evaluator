@@ -228,7 +228,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       .filter((m) => m !== 'gemini-3.8-flash' && m !== 'gemini-flash-latest');
     if (candidateModels.length === 0) candidateModels.push('gemini-2.5-flash');
 
-    const timeoutBudget = config.requestTimeoutMs < 5000 ? config.requestTimeoutMs : Math.max(config.requestTimeoutMs, 120000);
+    const timeoutBudget = config.requestTimeoutMs < 5000 ? config.requestTimeoutMs : Math.max(config.requestTimeoutMs, 180000);
     console.log(
       `[AnswerKeyService][${correlationId}][Stage 2: Gemini Request] Initiating answer key generation across candidate models [${candidateModels.join(', ')}] with canonicalAnswerKeySchema, thinkingBudget=0, timeout=${timeoutBudget}ms...`
     );
@@ -515,7 +515,7 @@ Output must be strictly raw JSON with no Markdown wrapping.`;
       .filter((m) => m !== 'gemini-3.8-flash' && m !== 'gemini-flash-latest');
     if (candidateModels.length === 0) candidateModels.push('gemini-2.5-flash');
 
-    const timeoutBudget = config.requestTimeoutMs < 5000 ? config.requestTimeoutMs : Math.max(config.requestTimeoutMs, 120000);
+    const timeoutBudget = config.requestTimeoutMs < 5000 ? config.requestTimeoutMs : Math.max(config.requestTimeoutMs, 180000);
 
     const geminiResult = await callGeminiWithFallback(
       contentsParts,

@@ -20,7 +20,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from './config';
-import { EvaluationReport } from './types';
+import { EvaluationReport, StudentExtractedScript, CanonicalAnswerKey } from './types';
 import { UserContext } from './auth';
 
 export const CACHE_PROMPT_VERSION = 'nextgen_eval_engine_v4.1_hardened';
@@ -40,6 +40,7 @@ export interface CacheEntry {
 
 export class EvaluationCacheService {
   private memoryCache = new Map<string, CacheEntry>();
+  private extractionMemoryCache = new Map<string, StudentExtractedScript>();
   private cacheDir: string;
   public totalRequests = 0;
   public cacheHits = 0;
@@ -246,6 +247,64 @@ export class EvaluationCacheService {
 
   public clear(): void {
     this.memoryCache.clear();
+    this.extractionMemoryCache.clear();
+  }
+
+  /**
+   * Generates a deterministic fingerprint for student script extraction
+   */
+  public generateExtractionFingerprint(
+    sourceDoc: { text?: string; base64?: string; name?: string; mimeType?: string },
+    canonicalKey: CanonicalAnswerKey
+  ): string {
+    const hash = crypto.createHash('sha256');
+    hash.update('EXTRACTION_V1|');
+    hash.update(String(sourceDoc.name || '') + '|');
+    hash.update(String(sourceDoc.text || '') + '|');
+    if (sourceDoc.base64) {
+      hash.update(sourceDoc.base64.substring(0, 5000) + '|');
+    }
+    hash.update(String(canonicalKey.id || '') + '|');
+    hash.update(String(canonicalKey.version || 1));
+    return hash.digest('hex');
+  }
+
+  /**
+   * Retrieves previously completed Stage 1 extraction so grading can resume without repeating it
+   */
+  public getExtractedScript(cacheKey: string): StudentExtractedScript | null {
+    if (this.extractionMemoryCache.has(cacheKey)) {
+      return this.extractionMemoryCache.get(cacheKey)!;
+    }
+    try {
+      const filePath = path.join(this.cacheDir, `ext_${cacheKey}.json`);
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const script = JSON.parse(raw) as StudentExtractedScript;
+        if (script && Array.isArray(script.answers) && script.answers.length > 0) {
+          this.extractionMemoryCache.set(cacheKey, script);
+          return script;
+        }
+      }
+    } catch (e) {
+      console.warn('[CacheService] Failed reading cached extraction:', e);
+    }
+    return null;
+  }
+
+  /**
+   * Persists verified Stage 1 extraction result
+   */
+  public saveExtractedScript(cacheKey: string, script: StudentExtractedScript): void {
+    this.extractionMemoryCache.set(cacheKey, script);
+    try {
+      const tempPath = path.join(this.cacheDir, `ext_${cacheKey}.tmp.${Date.now()}`);
+      const filePath = path.join(this.cacheDir, `ext_${cacheKey}.json`);
+      fs.writeFileSync(tempPath, JSON.stringify(script, null, 2), 'utf-8');
+      fs.renameSync(tempPath, filePath);
+    } catch (e) {
+      console.warn('[CacheService] Failed saving cached extraction to disk:', e);
+    }
   }
 }
 
