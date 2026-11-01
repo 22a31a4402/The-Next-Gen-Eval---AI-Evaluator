@@ -276,9 +276,10 @@ async function runMetadataTests() {
     const job2: EvaluationJob = {
       ...job1,
       id: jobId2,
+      extractedScript: undefined,
       correlationId: `meta_corr_2_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_2_${Date.now()}`, startTime: Date.now() },
-      extractedScript: undefined,
+
       inputPayload: {
         sourceDoc: { name: 'student_script_2_retry.pdf', text: `Unique text for retry test ${Date.now()}: Q1 Relations of thyroid.` },
         canonicalAnswerKey: anatomyCanonicalKey,
@@ -345,9 +346,10 @@ async function runMetadataTests() {
     const job3: EvaluationJob = {
       ...job1,
       id: jobId3,
+      extractedScript: undefined,
       correlationId: `meta_corr_3_${Date.now()}`,
       metrics: { ...job1.metrics, correlationId: `meta_corr_3_${Date.now()}`, startTime: Date.now() },
-      extractedScript: undefined,
+
       inputPayload: {
         sourceDoc: { name: 'student_script_3_fail.pdf', text: `Unique text for failed test ${Date.now()}: Q1 Relations of thyroid.` },
         canonicalAnswerKey: anatomyCanonicalKey,

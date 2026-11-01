@@ -111,6 +111,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Mount dedicated backend routes
 app.use(healthRouter);
+app.use('/api/health', healthRouter);
 app.use('/api/evaluations', evaluationsRouter);
 app.use('/api/answer-keys', answerKeysRouter);
 
