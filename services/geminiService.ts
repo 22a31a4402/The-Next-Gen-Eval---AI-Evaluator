@@ -197,8 +197,8 @@ export const generateStructuredFeedback = async (
 
     let lastActiveTimestamp = Date.now();
     const pollingStart = Date.now();
-    const MAX_ACTIVE_PROCESSING_LIMIT_MS = 300000; // 5 minutes max total execution time
-    const MAX_IDLE_TIMEOUT_MS = 90000; // 90 seconds without successful server response
+    const MAX_ACTIVE_PROCESSING_LIMIT_MS = 600000; // 10 minutes max total execution time
+    const MAX_IDLE_TIMEOUT_MS = 120000; // 120 seconds without successful server response
 
     const cleanup = () => {
       if (sseSource) {

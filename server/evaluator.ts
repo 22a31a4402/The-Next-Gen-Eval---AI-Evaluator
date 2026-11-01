@@ -23,6 +23,7 @@ import {
   QuestionFeedback,
   CanonicalAnswerKey,
   StudentExtractedScript,
+  detectAndNormalizeChoiceGroups,
 } from './types';
 import { config } from './config';
 import { ACTIVE_PRICING_VERSION } from './pricing';
@@ -272,7 +273,7 @@ export class EvaluationEngine {
     const valStart = Date.now();
     let validatedReport: EvaluationReport;
     try {
-      validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName);
+      validatedReport = this.validateAndNormalizeReport(geminiResult.report, mode, job.studentName, activeCanonicalKey);
     } catch (valErr: any) {
       // If the discrepancy is purely an aggregate totalScore or maxScore arithmetic addition error from an LLM fallback,
       // but all individual question marks, bounds, and criteria are valid, reconcile with deterministic backend calculation!
@@ -300,7 +301,7 @@ export class EvaluationEngine {
         );
         fixedReport.totalScore = parseFloat(exactTotal.toFixed(2));
         fixedReport.maxScore = parseFloat(exactMax.toFixed(2));
-        validatedReport = this.validateAndNormalizeReport(fixedReport, mode, job.studentName);
+        validatedReport = this.validateAndNormalizeReport(fixedReport, mode, job.studentName, activeCanonicalKey);
       } else {
         job.status = 'needs_review';
         job.draftReport = geminiResult.report; // Preserve unvalidated draft for authorized instructor/admin review
@@ -367,7 +368,8 @@ export class EvaluationEngine {
   public validateAndNormalizeReport(
     report: any,
     mode: EvaluationMode,
-    fallbackStudentName: string
+    fallbackStudentName: string,
+    canonicalAnswerKey?: CanonicalAnswerKey
   ): EvaluationReport {
     if (!report || typeof report !== 'object') {
       throw new ValidationError('Malformed response: Expected a structured JSON object.');
@@ -383,9 +385,6 @@ export class EvaluationEngine {
     }
 
     const seenQNos = new Set<string>();
-    let calculatedTotalScore = 0;
-    let calculatedMaxScore = 0;
-
     const validatedQuestions: QuestionFeedback[] = [];
 
     for (let idx = 0; idx < report.questions.length; idx++) {
@@ -450,9 +449,6 @@ export class EvaluationEngine {
         flaggedComment = undefined;
       }
 
-      calculatedTotalScore += marks;
-      calculatedMaxScore += maxMarks;
-
       validatedQuestions.push({
         qNo,
         marks,
@@ -464,16 +460,114 @@ export class EvaluationEngine {
       });
     }
 
-    // 7. Aggregate Totals: Calculated deterministically in code from question marks
+    // 7. Resolving Question Hierarchy and Alternative Choice Groups:
+    // Identify parent containers whose subquestions carry marks to avoid double-counting header marks
+    const canonicalQuestions = canonicalAnswerKey?.questions
+      ? detectAndNormalizeChoiceGroups(canonicalAnswerKey.questions)
+      : [];
+    const canonicalMap = new Map<string, any>();
+    const canonicalParentIds = new Set<string>();
+
+    for (const cq of canonicalQuestions) {
+      canonicalMap.set(cq.questionId.trim().toLowerCase(), cq);
+      if (cq.parentQuestionId) canonicalParentIds.add(cq.parentQuestionId.trim().toLowerCase());
+      const match = cq.questionId.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
+      if (match && canonicalQuestions.some((o) => o.questionId === match[1])) {
+        canonicalParentIds.add(match[1].toLowerCase());
+      }
+    }
+
+    const evaluatedParentIds = new Set<string>();
+    for (const vq of validatedQuestions) {
+      const match = vq.qNo.match(/^([0-9a-zA-Z]+)[\.\(\_\-]/);
+      if (match && validatedQuestions.some((o) => o.qNo === match[1])) {
+        evaluatedParentIds.add(match[1].toLowerCase());
+      }
+    }
+
+    // Build question-to-choice-group mappings
+    const choiceGroupMap = new Map<string, string>(); // qNo -> alternativeGroup
+
+    if (canonicalQuestions.length > 0) {
+      for (const vq of validatedQuestions) {
+        const cleanId = vq.qNo.trim().toLowerCase();
+        const match = canonicalMap.get(cleanId);
+        if (match?.isAlternative && match?.alternativeGroup) {
+          choiceGroupMap.set(vq.qNo, match.alternativeGroup.trim());
+        }
+      }
+    }
+
+    // If any questions weren't grouped via canonical key, run choice group detection directly
+    const unmapped = validatedQuestions.map((vq) => ({
+      questionId: vq.qNo,
+      isAlternative: choiceGroupMap.has(vq.qNo),
+      alternativeGroup: choiceGroupMap.get(vq.qNo),
+      maxMarks: vq.maxMarks,
+      questionText: vq.feedbackPoints?.join(' '),
+    }));
+    const detected = detectAndNormalizeChoiceGroups(unmapped);
+    for (const d of detected) {
+      if (d.isAlternative && d.alternativeGroup) {
+        choiceGroupMap.set(d.questionId, d.alternativeGroup.trim());
+      }
+    }
+
+    // Aggregate marks:
+    // - Skip parent container headers if child subquestions carry marks
+    // - For alternative choice groups: count ONE permitted alternative for maxMarks, and award highest-scoring attempted option
+    // - For compulsory questions: add marks and maxMarks
+    let calculatedTotalScore = 0;
+    let calculatedMaxScore = 0;
+    const choiceGroupAwarded: Record<string, number> = {};
+    const choiceGroupMax: Record<string, number> = {};
+
+    for (const vq of validatedQuestions) {
+      const cleanId = vq.qNo.trim().toLowerCase();
+      const isParent = canonicalParentIds.has(cleanId) || evaluatedParentIds.has(cleanId);
+      if (isParent) {
+        const childMarksSum = validatedQuestions
+          .filter((c) => c.qNo !== vq.qNo && c.qNo.toLowerCase().startsWith(cleanId))
+          .reduce((sum, c) => sum + c.maxMarks, 0);
+        if (childMarksSum > 0) {
+          // Skip parent container header marks to avoid double-counting
+          continue;
+        }
+      }
+
+      const grp = choiceGroupMap.get(vq.qNo);
+      if (grp) {
+        choiceGroupAwarded[grp] = Math.max(choiceGroupAwarded[grp] || 0, vq.marks);
+        choiceGroupMax[grp] = Math.max(choiceGroupMax[grp] || 0, vq.maxMarks);
+      } else {
+        calculatedTotalScore += vq.marks;
+        calculatedMaxScore += vq.maxMarks;
+      }
+    }
+
+    // Add choice group contributions (only ONE permitted alternative counted per choice group)
+    for (const grp of Object.keys(choiceGroupMax)) {
+      calculatedMaxScore += choiceGroupMax[grp];
+      calculatedTotalScore += choiceGroupAwarded[grp] || 0;
+    }
+
+    // Align paper maximum marks with authoritative canonical total if available
+    if (canonicalAnswerKey?.totalMaxMarks && canonicalAnswerKey.totalMaxMarks > 0) {
+      calculatedMaxScore = canonicalAnswerKey.totalMaxMarks;
+    } else if (canonicalAnswerKey?.printedMaxMarks && canonicalAnswerKey.printedMaxMarks > 0) {
+      calculatedMaxScore = canonicalAnswerKey.marksValidation?.calculatedTotalMarks || canonicalAnswerKey.printedMaxMarks;
+    }
+
+    calculatedTotalScore = Math.min(calculatedTotalScore, calculatedMaxScore);
     const roundedTotalScore = parseFloat(calculatedTotalScore.toFixed(2));
     const roundedMaxScore = parseFloat(calculatedMaxScore.toFixed(2));
 
-    // Log reconciliation if model aggregate differs slightly from deterministic sum
+    // Log reconciliation if model aggregate differs slightly from deterministic calculation
     if (typeof report.totalScore === 'number' && Number.isFinite(report.totalScore)) {
       const diff = Math.abs(report.totalScore - roundedTotalScore);
       if (diff > 0.05) {
         console.log(
-          `[EvaluationEngine] Deterministic score calculation: Reconciled model reported totalScore (${report.totalScore}) to exact sum of question marks (${roundedTotalScore}).`
+          `[EvaluationEngine] Deterministic score calculation: Reconciled model reported totalScore (${report.totalScore}) to choice-rule calculated marks (${roundedTotalScore}).`
         );
       }
     }
@@ -482,7 +576,7 @@ export class EvaluationEngine {
       const diff = Math.abs(report.maxScore - roundedMaxScore);
       if (diff > 0.05) {
         console.log(
-          `[EvaluationEngine] Deterministic maxScore calculation: Reconciled model reported maxScore (${report.maxScore}) to exact sum of question maxMarks (${roundedMaxScore}).`
+          `[EvaluationEngine] Deterministic maxScore calculation: Reconciled model reported maxScore (${report.maxScore}) to canonical paper maxMarks (${roundedMaxScore}).`
         );
       }
     }

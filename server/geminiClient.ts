@@ -515,6 +515,8 @@ export const callGeminiWithFallback = async (
   const overallStart = Date.now();
   const overallTimeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : config.requestTimeoutMs;
   const overallDeadline = overallStart + overallTimeoutMs;
+  const individualCallTimeoutMs = 60000; // 60s max per single API attempt
+  const modelTimeSpent: Record<string, number> = {};
 
   for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
     const modelName = candidateModels[modelIdx];
@@ -600,12 +602,13 @@ export const callGeminiWithFallback = async (
       const callStart = Date.now();
       try {
         console.log(`[GeminiClient][${correlationId}] Calling ${modelName} (attempt ${attempt + 1})...`);
-        const remainingForCall = Math.max(100, overallDeadline - Date.now());
+        const timeRemainingInBudget = overallDeadline - Date.now();
+        const remainingForCall = Math.min(individualCallTimeoutMs, Math.max(100, timeRemainingInBudget));
 
         let timeoutHandle: any;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
-            reject(new Error(`Gemini call deadline exceeded (${overallTimeoutMs}ms total budget)`));
+            reject(new Error(`Gemini call deadline exceeded (${remainingForCall}ms per-call timeout, ${overallTimeoutMs}ms total budget)`));
           }, remainingForCall);
         });
 
@@ -672,6 +675,7 @@ export const callGeminiWithFallback = async (
         });
 
         const latencyMs = Date.now() - callStart;
+        modelTimeSpent[modelName] = (modelTimeSpent[modelName] || 0) + latencyMs;
         const text = response.text;
         if (!text || text.trim().length === 0) {
           throw new Error(`Empty response received from Gemini model ${modelName}`);
@@ -746,7 +750,7 @@ export const callGeminiWithFallback = async (
         const summary = usageLedger.getJobUsageSummary(jobId);
 
         console.log(
-          `[GeminiClient][${correlationId}] Successfully evaluated with ${modelName}. Latency: ${latencyMs}ms, Tokens: in=${inputTokens ?? 'N/A'}/out=${outputTokens ?? 'N/A'}/cached=${cachedInputTokens ?? 'N/A'}, EstCost: $${costCalc.totalCostUsd ?? 'N/A'} (₹${costCalc.totalCostInr ?? 'N/A'})`
+          `[GeminiClient][${correlationId}] Successfully evaluated with ${modelName}. Latency: ${latencyMs}ms, Model latency summary: [${Object.entries(modelTimeSpent).map(([m, ms]) => `${m}: ${ms}ms`).join(', ')}], Tokens: in=${inputTokens ?? 'N/A'}/out=${outputTokens ?? 'N/A'}/cached=${cachedInputTokens ?? 'N/A'}, EstCost: $${costCalc.totalCostUsd ?? 'N/A'} (₹${costCalc.totalCostInr ?? 'N/A'})`
         );
 
         return {
@@ -769,6 +773,7 @@ export const callGeminiWithFallback = async (
       } catch (err: any) {
         lastError = err;
         const attemptLatency = Date.now() - callStart;
+        modelTimeSpent[modelName] = (modelTimeSpent[modelName] || 0) + attemptLatency;
         const retryable = isRetryableError(err);
         const isTimeout =
           String(err?.message || '').toLowerCase().includes('deadline exceeded') ||
@@ -847,6 +852,10 @@ export const callGeminiWithFallback = async (
     isRetryableError(lastError) ||
     /503|high demand|unavailable|overloaded/i.test(lastError?.message || '') ||
     /<!doctype|<html|unexpected token '<'|is not valid json/i.test(lastError?.message || '');
+
+  console.warn(
+    `[GeminiClient][${correlationId}] Fallback chain exhausted across candidate models. Time spent per model: ${Object.entries(modelTimeSpent).map(([m, ms]) => `${m}: ${ms}ms`).join(', ')}`
+  );
 
   const finalError: any = new Error(
     `Evaluation failed across candidate models (${candidateModels.join(', ')}). Last error: ${lastError?.message || lastError}`
